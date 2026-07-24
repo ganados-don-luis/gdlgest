@@ -1,8 +1,43 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabase';
+import { APP_NOMBRE, APP_VERSION, CAMBIOS } from '../version';
 
 const CAMPANA = '2025-2026';
+
+const MONEDAS = [
+  { key: 'USD', label: 'U$S' },
+  { key: 'ARS', label: 'AR$' },
+];
+
+const COLOR = {
+  fondo:      '#EDE4D2',
+  papel:      '#FFFFFF',
+  fila:       '#F7F1E4',
+  linea:      '#E9E0CE',
+  borde:      '#DDD2BC',
+  oscuro:     '#241D17',
+  medio:      '#33291F',
+  bronce:     '#D9A441',
+  texto:      '#2E2519',
+  textoSuave: '#7D6E56',
+  textoTenue: '#9A8A6E',
+};
+
+const COLOR_UDN = {
+  agricultura:     { base: '#7C8460', claro: '#E4EAD6', texto: '#4C5735', num: '#B7C48F' },
+  granja_cerdos:   { base: '#A9542F', claro: '#F6DED2', texto: '#7A3A1F', num: '#E8A882' },
+  serv_transporte: { base: '#4A5A5C', claro: '#DCE6E7', texto: '#334042', num: '#A9BCBE' },
+  serv_agricolas:  { base: '#C08A23', claro: '#FBEBCB', texto: '#7E5A12', num: '#E6C070' },
+};
+
+const FUENTE = {
+  titulo: "'Cormorant Garamond', Georgia, serif",
+  ui:     "'Inter', -apple-system, sans-serif",
+};
 
 const UDN = [
   { key: 'agricultura',     label: 'AGRICULTURA' },
@@ -89,8 +124,18 @@ const getUdnPorCodigo = (codigo, reglas) => {
 };
 
 export default function EERR() {
+  const navigate = useNavigate();
+  const [verCambios, setVerCambios] = useState(false);
+
+  const cerrarSesion = async () => {
+    if (!window.confirm('¿Cerrar sesión?')) return;
+    await supabase.auth.signOut();
+    navigate('/');
+  };
+
   const [tab, setTab] = useState('importar');
-  const [mesesCargados, setMesesCargados] = useState([]);
+  const [mesesPorMoneda, setMesesPorMoneda] = useState({ USD: [], ARS: [] });
+  const [monedaVista, setMonedaVista] = useState('USD');
   const [registros, setRegistros] = useState([]);
   const [reglas, setReglas] = useState({});
   const [cargando, setCargando] = useState(false);
@@ -105,6 +150,8 @@ export default function EERR() {
   const [datosMes, setDatosMes] = useState(null);
   const [mesActual, setMesActual] = useState('');
   const [nombreArchivoActual, setNombreArchivoActual] = useState('');
+  const [monedaArchivo, setMonedaArchivo] = useState('USD');
+  const mesesCargados = mesesPorMoneda[monedaVista] || [];
 
   // Filtros visualización
   const [mesesSeleccionados, setMesesSeleccionados] = useState([]);
@@ -113,6 +160,72 @@ export default function EERR() {
   const [dragStart, setDragStart] = useState(null);
   const [ocultarCeros, setOcultarCeros] = useState(true);
   const [seleccionPrevia, setSeleccionPrevia] = useState([]);
+
+  const informeRef = useRef(null);
+  const [exportando, setExportando] = useState('');
+
+  const nombreInforme = () => {
+    const ms = [...mesesSeleccionados].sort();
+    const rango = ms.length === 1 ? ms[0] : `${ms[0]}_a_${ms[ms.length - 1]}`;
+    return `EERR_GDL_${rango}_${monedaVista}`;
+  };
+
+  const capturar = async () => {
+    return await html2canvas(informeRef.current, {
+      scale: 2,
+      backgroundColor: '#FFFFFF',
+      useCORS: true,
+      scrollX: 0,
+      scrollY: -window.scrollY,
+    });
+  };
+
+  const descargarPNG = async () => {
+    if (!informeRef.current) return;
+    setExportando('png');
+    try {
+      const canvas = await capturar();
+      const link = document.createElement('a');
+      link.download = `${nombreInforme()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (e) {
+      setError('No se pudo generar la imagen.');
+    }
+    setExportando('');
+  };
+
+  const descargarPDF = async () => {
+    if (!informeRef.current) return;
+    setExportando('pdf');
+    try {
+      const canvas = await capturar();
+      const img = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pw = pdf.internal.pageSize.getWidth();
+      const ph = pdf.internal.pageSize.getHeight();
+      const margen = 8;
+      const anchoUtil = pw - margen * 2;
+      const altoImg = (canvas.height * anchoUtil) / canvas.width;
+
+      if (altoImg <= ph - margen * 2) {
+        pdf.addImage(img, 'PNG', margen, margen, anchoUtil, altoImg);
+      } else {
+        let restante = altoImg;
+        let offset = 0;
+        while (restante > 0) {
+          pdf.addImage(img, 'PNG', margen, margen - offset, anchoUtil, altoImg);
+          restante -= (ph - margen * 2);
+          offset += (ph - margen * 2);
+          if (restante > 0) pdf.addPage();
+        }
+      }
+      pdf.save(`${nombreInforme()}.pdf`);
+    } catch (e) {
+      setError('No se pudo generar el PDF.');
+    }
+    setExportando('');
+  };
 
   // Ingresos campaña completa para prorrateo
   const [ingCampana, setIngCampana] = useState({});
@@ -134,22 +247,30 @@ export default function EERR() {
     await supabase.from('balance_mensual')
       .delete()
       .eq('campana', CAMPANA)
-      .eq('mes', archivo.mes);
+      .eq('mes', archivo.mes)
+      .eq('moneda', archivo.moneda || 'USD');
     await supabase.from('archivos_importados')
       .delete()
       .eq('id', archivo.id);
-    cargarArchivos();
-    cargarMeses();
-    cargarIngCampana();
+    await cargarArchivos();
+    await cargarMeses();
+    await cargarIngCampana();
     setRegistros([]);
     setMesesSeleccionados(prev => prev.filter(m => m !== archivo.mes));
   };
 
   const cargarMeses = async () => {
     const { data } = await supabase
-      .from('balance_mensual').select('mes')
+      .from('archivos_importados').select('mes, moneda')
       .eq('campana', CAMPANA).order('mes');
-    if (data) setMesesCargados([...new Set(data.map(d => d.mes))]);
+    if (data) {
+      const m = { USD: [], ARS: [] };
+      data.forEach(d => {
+        const mo = d.moneda || 'USD';
+        if (m[mo] && !m[mo].includes(d.mes)) m[mo].push(d.mes);
+      });
+      setMesesPorMoneda(m);
+    }
   };
 
   const cargarReglas = async () => {
@@ -165,7 +286,8 @@ export default function EERR() {
   const cargarIngCampana = useCallback(async () => {
     const { data } = await supabase
       .from('balance_mensual').select('*')
-      .eq('campana', CAMPANA).eq('tipo', 'INGRESO');
+      .eq('campana', CAMPANA).eq('tipo', 'INGRESO')
+      .eq('moneda', monedaVista);
     if (!data || !Object.keys(reglas).length) return;
 
     const totales = { agricultura: 0, granja_cerdos: 0, serv_transporte: 0, serv_agricolas: 0 };
@@ -180,14 +302,16 @@ export default function EERR() {
       }
     });
     setIngCampana(totales);
-  }, [reglas]);
+  }, [reglas, monedaVista]);
 
   useEffect(() => {
     if (Object.keys(reglas).length > 0) cargarIngCampana();
   }, [reglas, cargarIngCampana]);
 
 const cargarRegistros = useCallback(async () => {
-    if (mesesSeleccionados.length === 0) { setRegistros([]); return; }
+    const disponibles = mesesPorMoneda[monedaVista] || [];
+    const mesesVisibles = mesesSeleccionados.filter(m => disponibles.includes(m));
+    if (mesesVisibles.length === 0) { setRegistros([]); setCargando(false); return; }
     setCargando(true);
 
     // Supabase pagina de a 1000 — necesitamos traer todo
@@ -199,7 +323,8 @@ const cargarRegistros = useCallback(async () => {
       const { data, error } = await supabase
         .from('balance_mensual').select('*')
         .eq('campana', CAMPANA)
-        .in('mes', mesesSeleccionados)
+        .eq('moneda', monedaVista)
+        .in('mes', mesesVisibles)
         .order('cuenta_codigo')
         .range(from, from + pageSize - 1);
 
@@ -211,7 +336,7 @@ const cargarRegistros = useCallback(async () => {
 
     setRegistros(allData);
     setCargando(false);
-  }, [mesesSeleccionados]);
+  }, [mesesSeleccionados, monedaVista, mesesPorMoneda]);
   
   useEffect(() => {
     if (tab === 'visualizar') cargarRegistros();
@@ -230,7 +355,16 @@ const cargarRegistros = useCallback(async () => {
       return;
     }
     const mes = `${matchMes[1]}-${matchMes[2]}`;
+
+    const tokens = nombreLimpio.toUpperCase().replace(/[^A-Z0-9]+/g, ' ');
+    const moneda = /\b(ARS|AR|PESOS)\b/.test(tokens) ? 'ARS'
+      : /\b(USD|DOLARES|DOLAR)\b/.test(tokens) ? 'USD' : null;
+    if (!moneda) {
+      setError('No se detectó la moneda. El nombre del archivo debe incluir "usd" o "ar$".');
+      return;
+    }
     setNombreArchivoActual(file.name);
+    setMonedaArchivo(moneda);
 
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -255,7 +389,7 @@ const cargarRegistros = useCallback(async () => {
           const reg = {
             campana: CAMPANA, mes,
             fecha_periodo: `${matchMes[1]}-${matchMes[2]}-01`,
-            cuenta_codigo: codigo, cuenta_desc: desc, tipo,
+            cuenta_codigo: codigo, cuenta_desc: desc, tipo, moneda,
           };
           TODAS_COLUMNAS.forEach(col => {
             const idx = colMap[col.key];
@@ -288,7 +422,7 @@ const cargarRegistros = useCallback(async () => {
           setDecisionesTemp({});
           setEtapa('revisando');
         } else {
-          await guardarMes(cuentasProcesadas, mes, file.name);
+          await guardarMes(cuentasProcesadas, mes, file.name, moneda);
         }
       } catch (err) {
         setError('Error al leer el archivo.');
@@ -298,25 +432,29 @@ const cargarRegistros = useCallback(async () => {
     e.target.value = '';
   };
 
-  const guardarMes = async (datos, mes, nombreArchivo) => {
+  const guardarMes = async (datos, mes, nombreArchivo, moneda) => {
     setEtapa('guardando');
+    const mon = moneda || monedaArchivo;
     await supabase.from('balance_mensual')
       .delete()
       .eq('campana', CAMPANA)
-      .eq('mes', mes);
+      .eq('mes', mes)
+      .eq('moneda', mon);
     const { error: err } = await supabase
       .from('balance_mensual')
       .insert(datos);
     if (err) setError('Error al guardar: ' + err.message);
     else {
       const nombreFinal = nombreArchivo || nombreArchivoActual || mes;
-      setMsg(`✓ ${nombreFinal} — ${MESES_CAMPANA.find(m => m.key === mes)?.label || mes} — ${datos.length} cuentas guardadas`);
+      const simbolo = MONEDAS.find(m => m.key === mon)?.label || mon;
+      setMsg(`✓ ${nombreFinal} — ${MESES_CAMPANA.find(m => m.key === mes)?.label || mes} — ${simbolo} — ${datos.length} cuentas guardadas`);
       await supabase.from('archivos_importados').upsert({
         campana: CAMPANA,
         mes,
+        moneda: mon,
         nombre_archivo: nombreFinal,
         importado_at: new Date().toISOString(),
-      }, { onConflict: 'campana,mes' });
+      }, { onConflict: 'campana,mes,moneda' });
       cargarMeses();
       cargarArchivos();
       cargarIngCampana();
@@ -343,7 +481,7 @@ const cargarRegistros = useCallback(async () => {
     if (cuentaActual < cuentasPendientes.length - 1) {
       setCuentaActual(prev => prev + 1);
     } else {
-      await guardarMes(datosMes, mesActual, nombreArchivoActual);
+      await guardarMes(datosMes, mesActual, nombreArchivoActual, monedaArchivo);
       setCuentasPendientes([]);
       setCuentaActual(0);
     }
@@ -459,10 +597,19 @@ const consolidar = useCallback(() => {
           <div style={s.headerTitle}>Ganados Don Luis S.A.</div>
           <div style={s.headerSub}>Estado de Resultados · Campaña {CAMPANA}</div>
         </div>
+        <div style={s.headerDer}>
+          <button style={s.versionBtn} onClick={() => navigate('/inicio')} title="Volver a la portada">
+            ← Inicio
+          </button>
+          <button style={s.versionBtn} onClick={() => setVerCambios(true)} title="Ver novedades">
+            v{APP_VERSION}
+          </button>
+          <button style={s.salirBtn} onClick={cerrarSesion}>Cerrar sesión</button>
+        </div>
         <div style={s.mesesBadges}>
-          {mesesCargados.map(m => (
-            <span key={m} style={s.mesBadge}>
-              {MESES_CAMPANA.find(mc => mc.key === m)?.label || m}
+          {MONEDAS.map(mon => (
+            <span key={mon.key} style={s.mesBadge}>
+              {mon.label} {(mesesPorMoneda[mon.key] || []).length}/12
             </span>
           ))}
         </div>
@@ -483,6 +630,35 @@ const consolidar = useCallback(() => {
         ))}
       </div>
 
+      {verCambios && (
+        <div style={s.modalFondo} onClick={() => setVerCambios(false)}>
+          <div style={s.modalCard} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHead}>
+              <div>
+                <div style={s.modalTitulo}>{APP_NOMBRE}</div>
+                <div style={s.modalSub}>Versión {APP_VERSION} · historial de mejoras</div>
+              </div>
+              <button style={s.modalCerrar} onClick={() => setVerCambios(false)}>×</button>
+            </div>
+            <div style={s.modalBody}>
+              {CAMBIOS.map(c => (
+                <div key={c.version} style={s.cambioBloque}>
+                  <div style={s.cambioHead}>
+                    <span style={c.version === APP_VERSION ? s.cambioVerActual : s.cambioVer}>
+                      v{c.version}
+                    </span>
+                    <span style={s.cambioFecha}>{c.fecha}</span>
+                  </div>
+                  <ul style={s.cambioLista}>
+                    {c.items.map((it, i) => <li key={i} style={s.cambioItem}>{it}</li>)}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={s.content}>
 
         {/* ── TAB IMPORTAR ── */}
@@ -501,21 +677,24 @@ const consolidar = useCallback(() => {
             {msg && <div style={s.msgOk}>{msg}</div>}
             {error && <div style={s.msgError}>{error}</div>}
 
-            {mesesCargados.length > 0 && (
-              <div style={{ marginTop: '24px' }}>
-                <div style={s.subTitle}>Estado campaña {CAMPANA}</div>
-                <div style={s.mesesGrid}>
-                  {MESES_CAMPANA.map(m => {
-                    const ok = mesesCargados.includes(m.key);
-                    return (
-                      <div key={m.key} style={ok ? s.mesOk : s.mesPendiente}>
-                        <span>{ok ? '✓' : '·'}</span> {m.label}
-                      </div>
-                    );
-                  })}
+            <div style={{ marginTop: '22px' }}>
+              <div style={s.subTitle}>Estado campaña {CAMPANA}</div>
+              {MONEDAS.map(mon => (
+                <div key={mon.key} style={s.estadoFila}>
+                  <span style={s.estadoLabel}>{mon.label}</span>
+                  <div style={s.mesesGrid}>
+                    {MESES_CAMPANA.map(m => {
+                      const ok = (mesesPorMoneda[mon.key] || []).includes(m.key);
+                      return (
+                        <div key={m.key} style={ok ? s.mesOk : s.mesPendiente} title={m.label}>
+                          {m.label.replace(' 20', "'")}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              ))}
+            </div>
 
             {archivos.length > 0 && (
               <div style={{ marginTop: '20px' }}>
@@ -527,6 +706,9 @@ const consolidar = useCallback(() => {
                       <span style={s.archivoNombre}>{a.nombre_archivo}</span>
                       <span style={s.archivoMes}>
                         {MESES_CAMPANA.find(m => m.key === a.mes)?.label || a.mes}
+                      </span>
+                      <span style={s.archivoMoneda}>
+                        {MONEDAS.find(m => m.key === (a.moneda || 'USD'))?.label || a.moneda}
                       </span>
                       <button
                         style={s.archivoEliminar}
@@ -653,50 +835,95 @@ const consolidar = useCallback(() => {
         {tab === 'visualizar' && (
           <>
 <div style={s.selectorBar}>
-              <div style={s.selectorLeft}>
+
+              <div style={s.filaSelector}>
+                <span style={s.selectorLabel}>MONEDA</span>
+                <div style={s.grupoBtns}>
+                  {MONEDAS.map(mon => (
+                    <button key={mon.key}
+                      style={monedaVista === mon.key ? s.monedaActive : s.monedaBtn}
+                      onClick={() => setMonedaVista(mon.key)}>
+                      {mon.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={s.filaSelector}>
                 <span style={s.selectorLabel}>PERÍODO</span>
-                <div style={s.mesesSelector} onMouseLeave={() => setDragging(false)}>
-                  {MESES_CAMPANA.map(m => {
-                    const disponible = mesesCargados.includes(m.key);
-                    const sel = mesesSeleccionados.includes(m.key);
-                    return (
-                      <div key={m.key}
-                        style={!disponible ? s.mesNA : sel ? s.mesSelActive : s.mesSel}
-                        onMouseDown={disponible ? () => onMesMouseDown(m.key) : undefined}
-                        onMouseEnter={disponible ? () => onMesMouseEnter(m.key) : undefined}
-                        onMouseUp={disponible ? () => setDragging(false) : undefined}
-                        onClick={disponible ? () => toggleMes(m.key) : undefined}>
-                        {m.label.replace(' 20', "'")}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div style={s.selectorRight}>
-                <div style={s.selectorActions}>
-                  <button style={s.btnMini} onClick={() => setMesesSeleccionados([...mesesCargados])}>Todos</button>
-                  <button style={s.btnMini} onClick={() => setMesesSeleccionados([])}>Ninguno</button>
-                  <span style={s.selectorCount}>
-                    {mesesSeleccionados.length > 0
-                      ? `${mesesSeleccionados.length} mes${mesesSeleccionados.length !== 1 ? 'es' : ''}`
-                      : 'Sin selección'}
-                  </span>
-                </div>
-                <div style={s.filtrosExtra}>
-                  <label style={s.checkLabel}>
-                    <input type="checkbox" checked={ocultarCeros}
-                      onChange={e => setOcultarCeros(e.target.checked)}
-                      style={{ marginRight: '5px' }} />
-                    Ocultar filas en cero
-                  </label>
-                  <div style={s.vistaBtns}>
-                    <button style={vistaDetalle ? s.vistaActive : s.vistaBtn}
-                      onClick={() => setVistaDetalle(true)}>Detalle</button>
-                    <button style={!vistaDetalle ? s.vistaActive : s.vistaBtn}
-                      onClick={() => setVistaDetalle(false)}>Rubro</button>
+                <div style={s.periodoBloque}>
+                  <div style={s.mesesSelector} onMouseLeave={() => setDragging(false)}>
+                    {MESES_CAMPANA.map(m => {
+                      const disponible = mesesCargados.includes(m.key);
+                      const sel = mesesSeleccionados.includes(m.key);
+                      const estilo = sel
+                        ? (disponible ? s.mesSelActive : s.mesSelSinDatos)
+                        : (disponible ? s.mesSel : s.mesNA);
+                      return (
+                        <div key={m.key}
+                          style={estilo}
+                          title={disponible ? m.label : `${m.label} — sin datos en ${MONEDAS.find(x => x.key === monedaVista)?.label}`}
+                          onMouseDown={() => onMesMouseDown(m.key)}
+                          onMouseEnter={() => onMesMouseEnter(m.key)}
+                          onMouseUp={() => setDragging(false)}
+                          onClick={() => toggleMes(m.key)}>
+                          {m.label.replace(' 20', "'")}
+                        </div>
+                      );
+                    })}
                   </div>
+                  <button style={s.btnMini}
+                    onClick={() => setMesesSeleccionados(prev => [...new Set([...prev, ...mesesCargados])])}>
+                    Todos
+                  </button>
+                  <button style={s.btnMini} onClick={() => setMesesSeleccionados([])}>Ninguno</button>
+                  {(() => {
+                    const conDatos = mesesSeleccionados.filter(m => mesesCargados.includes(m)).length;
+                    const sinDatos = mesesSeleccionados.length - conDatos;
+                    if (mesesSeleccionados.length === 0) return <span style={s.selectorCount}>Sin selección</span>;
+                    return (
+                      <span style={s.selectorCount}>
+                        {conDatos} mes{conDatos !== 1 ? 'es' : ''}
+                        {sinDatos > 0 && <span style={s.avisoSinDatos}> · {sinDatos} sin datos</span>}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
+
+              <div style={s.filaSelector}>
+                <span style={s.selectorLabel}>VISTA</span>
+                <div style={s.grupoBtns}>
+                  <button style={vistaDetalle ? s.vistaActive : s.vistaBtn}
+                    onClick={() => setVistaDetalle(true)}>Detalle</button>
+                  <button style={!vistaDetalle ? s.vistaActive : s.vistaBtn}
+                    onClick={() => setVistaDetalle(false)}>Rubro</button>
+                </div>
+                <label style={s.checkLabel}>
+                  <input type="checkbox" checked={ocultarCeros}
+                    onChange={e => setOcultarCeros(e.target.checked)}
+                    style={{ marginRight: '5px' }} />
+                  Ocultar filas en cero
+                </label>
+                <div style={{ flex: 1 }} />
+                <select
+                  style={s.descargaSelect}
+                  value=""
+                  disabled={!!exportando || mesesSeleccionados.length === 0}
+                  onChange={e => {
+                    const v = e.target.value;
+                    e.target.value = '';
+                    if (v === 'png') descargarPNG();
+                    if (v === 'pdf') descargarPDF();
+                  }}>
+                  <option value="" disabled hidden>
+                    {exportando ? 'Generando…' : 'Descargar'}
+                  </option>
+                  <option value="png">PNG — imagen</option>
+                  <option value="pdf">PDF — A4 apaisado</option>
+                </select>
+              </div>
+
             </div>
 
             {mesesSeleccionados.length === 0 ? (
@@ -706,13 +933,31 @@ const consolidar = useCallback(() => {
             ) : (
               <>
 
+                <div ref={informeRef} style={s.informeWrap}>
+                <div style={s.informeHead}>
+                  <div>
+                    <div style={s.informeTitulo}>Ganados Don Luis S.A.</div>
+                    <div style={s.informeSub}>
+                      Estado de resultados · Campaña {CAMPANA} · Expresado en {MONEDAS.find(m => m.key === monedaVista)?.label}
+                    </div>
+                  </div>
+                  <div style={s.informeMeses}>
+                    {[...mesesSeleccionados].sort().map(m =>
+                      MESES_CAMPANA.find(mc => mc.key === m)?.label || m
+                    ).join(' · ')}
+                  </div>
+                </div>
                 <div style={s.tableCard}>
                   <div style={s.tableWrap}>
                     <table style={s.table}>
                       <thead>
                         <tr>
                           <th style={s.thCuenta}>Cuenta</th>
-                          {UDN.map(u => <th key={u.key} style={s.th}>{u.label}</th>)}
+                          {UDN.map(u => (
+                            <th key={u.key} style={{ ...s.th, borderBottom: `3px solid ${COLOR_UDN[u.key].base}` }}>
+                              {u.label}
+                            </th>
+                          ))}
                           <th style={s.th}>TOTAL</th>
                           <th style={s.thCriterio}>Criterio</th>
                         </tr>
@@ -869,6 +1114,7 @@ const consolidar = useCallback(() => {
                     </table>
                   </div>
                 </div>
+                </div>
               </>
             )}
           </>
@@ -930,11 +1176,28 @@ const consolidar = useCallback(() => {
 }
 
 const s = {
-  container: { minHeight: '100vh', background: '#F2EDD8', fontFamily: 'Arial, sans-serif', userSelect: 'none' },
-  header: { background: '#1C1008', padding: '14px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' },
-  headerTitle: { fontSize: '16px', fontWeight: '700', color: '#E6B84A', fontFamily: 'Georgia, serif' },
+  container: { minHeight: '100vh', background: COLOR.fondo, fontFamily: FUENTE.ui, userSelect: 'none', position: 'relative' },
+  header: { background: COLOR.oscuro, padding: '14px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' },
+  headerTitle: { fontSize: '16px', fontWeight: '700', color: COLOR.bronce, fontFamily: 'Georgia, serif' },
   headerSub: { fontSize: '11px', color: 'rgba(255,255,255,0.5)', marginTop: '2px' },
   mesesBadges: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+  headerDer: { display: 'flex', alignItems: 'center', gap: '8px', order: 3 },
+  versionBtn: { padding: '3px 10px', fontSize: '10px', fontWeight: '600', fontFamily: FUENTE.ui, background: 'transparent', color: '#A79883', border: '1px solid #4A3E32', borderRadius: '3px', cursor: 'pointer', letterSpacing: '0.06em' },
+  salirBtn: { padding: '4px 12px', fontSize: '10px', fontWeight: '600', fontFamily: FUENTE.ui, background: 'transparent', color: '#D9A441', border: '1px solid #B8873B', borderRadius: '3px', cursor: 'pointer', letterSpacing: '0.08em' },
+  modalFondo: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(36,29,23,0.55)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '70px', zIndex: 50 },
+  modalCard: { background: '#FFFFFF', border: '1px solid #D8CDB6', borderRadius: '3px', width: '440px', maxWidth: '92vw', maxHeight: '72vh', display: 'flex', flexDirection: 'column' },
+  modalHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '18px 22px 14px', borderBottom: '1px solid #E9E0CE' },
+  modalTitulo: { fontSize: '20px', fontWeight: '500', color: '#241D17', fontFamily: FUENTE.titulo },
+  modalSub: { fontSize: '10px', color: '#8A7B62', letterSpacing: '0.08em', marginTop: '2px' },
+  modalCerrar: { background: 'none', border: 'none', fontSize: '22px', color: '#A2947B', cursor: 'pointer', lineHeight: 1, padding: 0 },
+  modalBody: { padding: '16px 22px 20px', overflowY: 'auto' },
+  cambioBloque: { marginBottom: '18px' },
+  cambioHead: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '7px' },
+  cambioVer: { fontSize: '11px', fontWeight: '700', color: '#7D6E56', fontFamily: FUENTE.ui, letterSpacing: '0.05em' },
+  cambioVerActual: { fontSize: '11px', fontWeight: '700', color: '#4C5735', background: '#E4EAD6', padding: '2px 8px', borderRadius: '999px', fontFamily: FUENTE.ui, letterSpacing: '0.05em' },
+  cambioFecha: { fontSize: '10px', color: '#A2947B' },
+  cambioLista: { margin: 0, paddingLeft: '16px' },
+  cambioItem: { fontSize: '12px', color: '#2E2519', lineHeight: '1.75', fontFamily: FUENTE.ui },
   mesBadge: { fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(62,110,52,0.5)', color: '#A8CC90', fontWeight: '700' },
   tabs: { background: '#2D1F0A', display: 'flex' },
   tab: { padding: '10px 24px', fontSize: '13px', fontWeight: '600', color: 'rgba(255,255,255,0.5)', background: 'none', border: 'none', borderBottom: '2px solid transparent', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
@@ -949,9 +1212,11 @@ const s = {
   msgOk: { marginTop: '12px', padding: '10px 14px', background: '#EAF3DE', color: '#274F22', borderRadius: '6px', fontSize: '13px', fontWeight: '600' },
   msgError: { marginTop: '12px', padding: '10px 14px', background: '#FDEAEA', color: '#7A1A1A', borderRadius: '6px', fontSize: '13px' },
   subTitle: { fontSize: '11px', fontWeight: '700', color: '#5E4E36', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' },
-  mesesGrid: { display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px' },
-  mesOk: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', background: '#EAF3DE', color: '#274F22', borderRadius: '6px', fontSize: '12px', fontWeight: '700' },
-  mesPendiente: { display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', background: '#F0EDE4', color: '#9B8B72', borderRadius: '6px', fontSize: '12px' },
+  mesesGrid: { display: 'flex', gap: '3px', flex: 1, minWidth: 0 },
+  mesOk: { flex: 1, textAlign: 'center', padding: '5px 2px', background: '#E4EAD6', color: '#4C5735', borderRadius: '3px', fontSize: '10px', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden' },
+  mesPendiente: { flex: 1, textAlign: 'center', padding: '5px 2px', background: '#F4EFE3', color: '#B0A288', borderRadius: '3px', fontSize: '10px', whiteSpace: 'nowrap', overflow: 'hidden' },
+  estadoFila: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '5px' },
+  estadoLabel: { width: '30px', fontSize: '10px', fontWeight: '700', color: '#7D6E56', letterSpacing: '0.08em', textAlign: 'right', flexShrink: 0 },
   progreso: { height: '4px', background: '#E6DEC8', borderRadius: '2px', marginBottom: '16px', overflow: 'hidden' },
   progresoBar: { height: '100%', background: '#3E6E34', borderRadius: '2px', transition: 'width 0.3s' },
   cuentaBox: { background: '#F6F1E7', borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' },
@@ -969,7 +1234,9 @@ const s = {
   mesesSelector: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
   mesSel: { padding: '8px 14px', fontSize: '12px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
   mesSelActive: { padding: '8px 14px', fontSize: '12px', fontWeight: '700', background: '#1A3317', color: '#A8CC90', border: '1px solid #3E6E34', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
-  mesNA: { padding: '8px 14px', fontSize: '12px', background: '#F6F1E7', color: '#C4B89A', border: '1px dashed #D6D0C4', borderRadius: '6px', cursor: 'not-allowed', userSelect: 'none' },
+  mesNA: { padding: '8px 14px', fontSize: '12px', background: '#F6F1E7', color: '#C4B89A', border: '1px dashed #D6D0C4', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
+  mesSelSinDatos: { padding: '8px 14px', fontSize: '12px', fontWeight: '700', background: '#F4EFE3', color: '#8A7B62', border: '1px dashed #B8873B', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
+  avisoSinDatos: { color: '#A9542F', fontWeight: '400' },
   filtroBtn: { padding: '6px 14px', fontSize: '12px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', borderRadius: '6px', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
   filtroBtnActive: { padding: '6px 14px', fontSize: '12px', fontWeight: '700', background: '#3E6E34', color: '#FFF', border: '1px solid #3E6E34', borderRadius: '6px', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
   tableCard: { background: '#FFF', border: '1px solid #D6D0C4', borderRadius: '10px', overflow: 'hidden' },
@@ -992,22 +1259,31 @@ const s = {
   prefijoBadge: { marginLeft: '6px', fontSize: '9px', padding: '1px 5px', background: '#E6DEC8', color: '#8E7E62', borderRadius: '4px' },
   loading: { textAlign: 'center', padding: '48px', color: '#8E7E62', fontSize: '13px' },
   empty: { textAlign: 'center', padding: '48px', color: '#8E7E62', fontSize: '13px' },
-  selectorBar: { background: '#FFFFFF', border: '1px solid #D6D0C4', borderRadius: '10px', padding: '12px 16px', marginBottom: '14px', display: 'flex', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' },
-  selectorLeft: { flex: 1, minWidth: 0 },
-  selectorRight: { display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end', flexShrink: 0 },
-  selectorLabel: { fontSize: '9px', fontWeight: '700', color: '#8E7E62', letterSpacing: '0.1em', textTransform: 'uppercase', display: 'block', marginBottom: '6px' },
-  selectorActions: { display: 'flex', gap: '6px', alignItems: 'center' },
+  selectorBar: { background: '#FFFFFF', border: '1px solid #D8CDB6', borderRadius: '3px', padding: '12px 16px', marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '10px' },
+  filaSelector: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+  selectorLabel: { width: '58px', fontSize: '9px', fontWeight: '700', color: '#7D6E56', letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0 },
+  periodoBloque: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', flex: 1 },
+  grupoBtns: { display: 'flex', gap: '4px' },
+  descargaSelect: { padding: '5px 26px 5px 10px', fontSize: '11px', fontWeight: '600', fontFamily: FUENTE.ui, background: '#241D17', color: '#D9A441', border: '1px solid #241D17', borderRadius: '3px', cursor: 'pointer', outline: 'none', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\'><path d=\'M0 0l5 6 5-6z\' fill=\'%23D9A441\'/></svg>")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 9px center' },
   selectorCount: { fontSize: '11px', color: '#8E7E62', fontWeight: '600', minWidth: '60px', textAlign: 'right' },
   btnMini: { padding: '3px 9px', fontSize: '11px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', borderRadius: '5px', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
-  filtrosExtra: { display: 'flex', gap: '12px', alignItems: 'center' },
   checkLabel: { fontSize: '11px', color: '#5E4E36', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center' },
   vistaBtns: { display: 'flex', gap: '0' },
   vistaBtn: { padding: '4px 10px', fontSize: '11px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
-  vistaActive: { padding: '4px 10px', fontSize: '11px', fontWeight: '700', background: '#1A3317', color: '#A8CC90', border: '1px solid #3E6E34', cursor: 'pointer', fontFamily: 'Arial, sans-serif' },
+  vistaActive: { padding: '4px 10px', fontSize: '11px', fontWeight: '700', background: '#1A3317', color: '#A8CC90', border: '1px solid #3E6E34', cursor: 'pointer', fontFamily: FUENTE.ui },
+  descargaBtns: { display: 'flex', gap: '4px' },
+  informeWrap: { background: '#FFFFFF', padding: '16px 18px', borderRadius: '3px' },
+  informeHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: '10px', marginBottom: '12px', borderBottom: '1px solid #D8CDB6', gap: '16px', flexWrap: 'wrap' },
+  informeTitulo: { fontSize: '19px', fontWeight: '500', color: '#241D17', fontFamily: FUENTE.titulo },
+  informeSub: { fontSize: '10px', color: '#7D6E56', marginTop: '3px', letterSpacing: '0.06em' },
+  informeMeses: { fontSize: '10px', color: '#7D6E56', textAlign: 'right', maxWidth: '340px', lineHeight: '1.5' },
   archivosList: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' },
   archivoItem: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', background: '#F6F1E7', border: '1px solid #E6DEC8', borderRadius: '6px', fontSize: '12px' },
   archivoIcon: { fontSize: '14px', flexShrink: 0 },
   archivoNombre: { flex: 1, color: '#2A1E10', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   archivoMes: { fontSize: '11px', padding: '2px 8px', background: '#EAF3DE', color: '#274F22', borderRadius: '10px', fontWeight: '700', flexShrink: 0 },
   archivoEliminar: { background: 'none', border: 'none', color: '#8E7E62', fontSize: '16px', cursor: 'pointer', padding: '0 2px', lineHeight: 1, flexShrink: 0, fontWeight: '700' },
+  archivoMoneda: { fontSize: '10px', padding: '2px 8px', background: '#FEF0E0', color: '#7E5A12', borderRadius: '10px', fontWeight: '700', flexShrink: 0 },
+  monedaBtn: { padding: '3px 11px', fontSize: '11px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', borderRadius: '5px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  monedaActive: { padding: '3px 11px', fontSize: '11px', fontWeight: '700', background: '#241D17', color: '#D9A441', border: '1px solid #241D17', borderRadius: '5px', cursor: 'pointer', fontFamily: FUENTE.ui },
 };

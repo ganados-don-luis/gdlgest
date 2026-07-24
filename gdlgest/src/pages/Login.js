@@ -1,52 +1,139 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabase';
+import { APP_NOMBRE, APP_VERSION } from '../version';
+
+const COLOR = {
+  fondo:      '#EDE4D2',
+  papel:      '#FFFFFF',
+  borde:      '#D8CDB6',
+  oscuro:     '#241D17',
+  bronce:     '#B8873B',
+  bronceClaro:'#E4C071',
+  texto:      '#2E2519',
+  textoSuave: '#8A7B62',
+  textoTenue: '#A2947B',
+  terracota:  '#A9542F',
+  errorFondo: '#FAF0EC',
+  errorTexto: '#7A3A1F',
+};
+
+const AZULEJOS = ['#7C8460', '#A9542F', '#4A5A5C', '#C08A23'];
+
+const FUENTE = {
+  titulo: "'Cormorant Garamond', Georgia, serif",
+  ui:     "'Inter', -apple-system, sans-serif",
+};
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [verPass, setVerPass] = useState(false);
+  const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
+  const [focoEmail, setFocoEmail] = useState(false);
+  const [focoPass, setFocoPass] = useState(false);
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      setError('Usuario o contraseña incorrectos');
+    setCargando(true);
+    const { error: err } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+    setCargando(false);
+    if (err) {
+      setError(
+        err.message === 'Invalid login credentials'
+          ? 'Usuario o contraseña incorrectos'
+          : 'No se pudo conectar. Revisá tu conexión e intentá de nuevo.'
+      );
     } else {
-      navigate('/eerr');
+      navigate('/inicio');
     }
   };
 
+  const campo = (activo) => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    borderBottom: `1px solid ${activo ? COLOR.bronce : COLOR.borde}`,
+    padding: '0 2px 9px',
+    marginBottom: '20px',
+    transition: 'border-color 0.2s',
+  });
+
   return (
     <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.logo}>🐄</div>
-        <h1 style={styles.title}>Ganados Don Luis S.A.</h1>
-        <p style={styles.subtitle}>Sistema de gestión</p>
-        <form onSubmit={handleLogin} style={styles.form}>
-          <input
-            style={styles.input}
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            required
-          />
-          <input
-            style={styles.input}
-            type="password"
-            placeholder="Contraseña"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-          />
-          {error && <p style={styles.error}>{error}</p>}
-          <button style={styles.button} type="submit">
-            Ingresar
-          </button>
-        </form>
+      <div style={styles.wrap}>
+
+        <div style={styles.azulejos}>
+          {AZULEJOS.map(c => (
+            <div key={c} style={{ height: '30px', background: c }} />
+          ))}
+        </div>
+
+        <div style={styles.card}>
+          <h1 style={styles.title}>Ganados Don Luis S.A.</h1>
+          <div style={styles.regla} />
+          <p style={styles.subtitle}>SISTEMA DE GESTIÓN</p>
+
+          <form onSubmit={handleLogin}>
+            <label style={styles.label} htmlFor="email">USUARIO</label>
+            <div style={campo(focoEmail)}>
+              <input
+                id="email"
+                style={styles.input}
+                type="email"
+                autoComplete="username"
+                placeholder="nombre@empresa.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onFocus={() => setFocoEmail(true)}
+                onBlur={() => setFocoEmail(false)}
+                required
+              />
+            </div>
+
+            <label style={styles.label} htmlFor="password">CONTRASEÑA</label>
+            <div style={campo(focoPass)}>
+              <input
+                id="password"
+                style={styles.input}
+                type={verPass ? 'text' : 'password'}
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onFocus={() => setFocoPass(true)}
+                onBlur={() => setFocoPass(false)}
+                required
+              />
+              <button
+                type="button"
+                style={styles.verBtn}
+                onClick={() => setVerPass(v => !v)}
+                aria-label={verPass ? 'Ocultar contraseña' : 'Ver contraseña'}>
+                {verPass ? 'ocultar' : 'ver'}
+              </button>
+            </div>
+
+            {error && <div style={styles.error}>{error}</div>}
+
+            <button
+              style={{ ...styles.button, opacity: cargando ? 0.6 : 1 }}
+              type="submit"
+              disabled={cargando}>
+              {cargando ? 'INGRESANDO…' : 'INGRESAR'}
+            </button>
+          </form>
+
+          <p style={styles.ayuda}>¿Olvidaste la contraseña? Consultá con administración</p>
+        </div>
+
+        <p style={styles.pie}>{APP_NOMBRE} v{APP_VERSION} · ACCESO RESTRINGIDO</p>
       </div>
     </div>
   );
@@ -55,67 +142,110 @@ function Login() {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: '#1C1008',
+    background: COLOR.fondo,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    padding: '24px',
+  },
+  wrap: { width: '100%', maxWidth: '350px' },
+  azulejos: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: '2px',
+    marginBottom: '24px',
   },
   card: {
-    background: '#F2EDD8',
-    borderRadius: '12px',
-    padding: '48px 40px',
-    width: '360px',
-    textAlign: 'center',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-  },
-  logo: {
-    fontSize: '48px',
-    marginBottom: '12px',
+    background: COLOR.papel,
+    border: `1px solid ${COLOR.borde}`,
+    borderRadius: '3px',
+    padding: '30px 28px',
   },
   title: {
-    fontSize: '20px',
-    fontWeight: '700',
-    color: '#1C1008',
-    marginBottom: '4px',
-    fontFamily: 'Georgia, serif',
+    fontSize: '27px',
+    fontWeight: '500',
+    color: COLOR.oscuro,
+    fontFamily: FUENTE.titulo,
+    textAlign: 'center',
+    letterSpacing: '0.01em',
+    lineHeight: '1.15',
+    margin: 0,
   },
+  regla: { width: '40px', height: '1px', background: COLOR.bronce, margin: '12px auto 10px' },
   subtitle: {
-    fontSize: '13px',
-    color: '#5E4E36',
-    marginBottom: '28px',
-    fontFamily: 'Arial, sans-serif',
+    fontSize: '9.5px',
+    color: COLOR.textoSuave,
+    fontFamily: FUENTE.ui,
+    textAlign: 'center',
+    letterSpacing: '0.22em',
+    margin: '0 0 26px',
   },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
+  label: {
+    display: 'block',
+    fontSize: '9.5px',
+    fontWeight: '500',
+    color: COLOR.textoSuave,
+    fontFamily: FUENTE.ui,
+    letterSpacing: '0.16em',
+    marginBottom: '6px',
   },
   input: {
-    padding: '10px 14px',
-    borderRadius: '6px',
-    border: '1px solid #D6D0C4',
-    fontSize: '14px',
-    fontFamily: 'Arial, sans-serif',
-    background: '#FFFFFF',
-    color: '#1C1008',
-    outline: 'none',
-  },
-  button: {
-    padding: '11px',
-    borderRadius: '6px',
+    flex: 1,
     border: 'none',
-    background: '#3E6E34',
-    color: '#FFFFFF',
-    fontSize: '14px',
-    fontWeight: '700',
-    fontFamily: 'Arial, sans-serif',
+    background: 'transparent',
+    fontSize: '13px',
+    fontFamily: FUENTE.ui,
+    color: COLOR.texto,
+    outline: 'none',
+    padding: 0,
+  },
+  verBtn: {
+    border: 'none',
+    background: 'transparent',
+    fontSize: '10px',
+    fontFamily: FUENTE.ui,
+    color: COLOR.textoTenue,
+    letterSpacing: '0.1em',
     cursor: 'pointer',
-    marginTop: '4px',
+    padding: 0,
   },
   error: {
-    color: '#7A1A1A',
-    fontSize: '13px',
-    fontFamily: 'Arial, sans-serif',
+    borderLeft: `2px solid ${COLOR.terracota}`,
+    background: COLOR.errorFondo,
+    padding: '8px 11px',
+    marginBottom: '20px',
+    fontSize: '11.5px',
+    fontFamily: FUENTE.ui,
+    color: COLOR.errorTexto,
+  },
+  button: {
+    width: '100%',
+    padding: '12px',
+    border: 'none',
+    borderRadius: '2px',
+    background: COLOR.oscuro,
+    color: COLOR.bronceClaro,
+    fontSize: '11px',
+    fontWeight: '500',
+    fontFamily: FUENTE.ui,
+    letterSpacing: '0.18em',
+    cursor: 'pointer',
+  },
+  ayuda: {
+    fontSize: '10.5px',
+    fontWeight: '300',
+    color: COLOR.textoTenue,
+    fontFamily: FUENTE.ui,
+    textAlign: 'center',
+    margin: '18px 0 0',
+  },
+  pie: {
+    fontSize: '9px',
+    color: COLOR.textoTenue,
+    fontFamily: FUENTE.ui,
+    textAlign: 'center',
+    letterSpacing: '0.2em',
+    margin: '18px 0 0',
   },
 };
 
