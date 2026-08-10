@@ -3,6 +3,18 @@ export const APP_VERSION = '1.3.0';
 
 export const CAMBIOS = [
   {
+    version: '1.5.0',
+    fecha: '2026-08-10',
+    items: [
+      'Nuevo módulo de margen bruto por lote',
+      'Importación de plan de siembra, cosecha, laboreos y productos aplicados',
+      'Pestaña de producción física con cantidades e insumos por hectárea',
+      'Parámetros económicos editables por campaña y cultivo',
+      'Conciliación integrada como pestaña del estado de resultados',
+      'Reglas editables con etiquetas de gestión',
+    ],
+  },
+  {
     version: '1.3.0',
     fecha: '2026-07-24',
     items: [

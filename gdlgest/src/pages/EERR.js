@@ -5,8 +5,24 @@ import jsPDF from 'jspdf';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../supabase';
 import { APP_NOMBRE, APP_VERSION, CAMBIOS } from '../version';
+import Conciliacion from './Conciliacion';
 
 const CAMPANA = '2025-2026';
+
+const CRITERIOS = [
+  { key: 'directo',    label: 'Directo',    desc: 'Va entero a una unidad de negocio' },
+  { key: 'prorrateo',  label: 'Prorrateo',  desc: 'Se reparte según ingresos de campaña' },
+  { key: 'excluir',    label: 'Excluir',    desc: 'No forma parte del resultado' },
+];
+
+const ETIQUETAS = [
+  { key: 'GVD',   label: 'GVD',   desc: 'Gastos variables directos', color: '#7C8460', fondo: '#E4EAD6' },
+  { key: 'GFD',   label: 'GFD',   desc: 'Gastos fijos directos',     color: '#4A5A5C', fondo: '#DCE6E7' },
+  { key: 'GI',    label: 'GI',    desc: 'Gastos indirectos',         color: '#7E5A12', fondo: '#FBEBCB' },
+  { key: 'GC',    label: 'GC',    desc: 'Gastos de comercialización', color: '#7A3A1F', fondo: '#F6DED2' },
+  { key: 'RF',    label: 'RF',    desc: 'Resultados financieros',    color: '#5F4B8B', fondo: '#EAE5F5' },
+  { key: 'AMORT', label: 'AMORT', desc: 'Amortizaciones',            color: '#6B6257', fondo: '#EDE9E1' },
+];
 
 const MONEDAS = [
   { key: 'USD', label: 'U$S' },
@@ -103,23 +119,12 @@ const mapColHeaders = (headers) => {
 };
 
 // Determinar UdN destino por código de cuenta
+// Busca la regla más específica: cuenta exacta, luego prefijos de 5, 4, 3 y 2 dígitos
 const getUdnPorCodigo = (codigo, reglas) => {
-  // Primero: cuentas específicas (6 dígitos)
-  if (reglas[codigo]) return reglas[codigo];
-
-  // Rango 431xxx especial
-  const num = parseInt(codigo);
-  if (num >= 431100 && num <= 431115) return { criterio: 'prefijo_directo', udn_destino: 'serv_transporte' };
-  if (num >= 431201 && num <= 431210) return { criterio: 'prefijo_directo', udn_destino: 'serv_agricolas' };
-
-  // Prefijos de 3 dígitos
-  const prefijos = ['516', '520', '480', '471', '461', '451', '441',
-    '515', '514', '513', '512', '511', '423', '422', '421',
-    '414', '413', '412', '411'];
-  for (const p of prefijos) {
-    if (codigo.startsWith(p) && reglas[p]) return reglas[p];
+  for (let largo = codigo.length; largo >= 2; largo--) {
+    const p = codigo.slice(0, largo);
+    if (reglas[p]) return reglas[p];
   }
-
   return null;
 };
 
@@ -152,6 +157,78 @@ export default function EERR() {
   const [nombreArchivoActual, setNombreArchivoActual] = useState('');
   const [monedaArchivo, setMonedaArchivo] = useState('USD');
   const mesesCargados = mesesPorMoneda[monedaVista] || [];
+
+  // Edición de reglas
+  const [editandoRegla, setEditandoRegla] = useState(null);
+  const [borradorRegla, setBorradorRegla] = useState({});
+  const [filtroReglas, setFiltroReglas] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState('todas');
+  const [filtroDestino, setFiltroDestino] = useState('todos');
+  const [filtroEtiqueta, setFiltroEtiqueta] = useState('todas');
+  const [filtroTipo, setFiltroTipo] = useState('todos');
+  const [nuevaRegla, setNuevaRegla] = useState(false);
+
+  const abrirRegla = (r) => {
+    setNuevaRegla(false);
+    setEditandoRegla(r.cuenta_codigo);
+    setBorradorRegla({
+      cuenta_codigo: r.cuenta_codigo,
+      cuenta_desc: r.cuenta_desc || '',
+      criterio: (r.criterio || '').replace('prefijo_', ''),
+      udn_destino: r.udn_destino || '',
+      clasificacion: r.clasificacion || '',
+      nota: r.nota || '',
+    });
+  };
+
+  const abrirNueva = () => {
+    setEditandoRegla(null);
+    setNuevaRegla(true);
+    setBorradorRegla({ cuenta_codigo: '', cuenta_desc: '', criterio: '', udn_destino: '', clasificacion: '', nota: '' });
+  };
+
+  const guardarRegla = async () => {
+    const b = borradorRegla;
+    if (!b.cuenta_codigo || !/^\d{3}$|^\d{6}$/.test(b.cuenta_codigo.trim())) {
+      setError('El código debe tener 3 dígitos (prefijo) o 6 dígitos (cuenta).');
+      return;
+    }
+    if (!b.criterio) { setError('Elegí un criterio.'); return; }
+    if (b.criterio === 'directo' && !b.udn_destino) {
+      setError('El criterio directo necesita una unidad de negocio destino.');
+      return;
+    }
+    setError('');
+    const esPrefijo = b.cuenta_codigo.trim().length === 3;
+    const criterioFinal = esPrefijo && b.criterio !== 'excluir'
+      ? `prefijo_${b.criterio}` : b.criterio;
+
+    const { error: err } = await supabase.from('reglas_cuentas').upsert({
+      cuenta_codigo: b.cuenta_codigo.trim(),
+      cuenta_desc: b.cuenta_desc || null,
+      criterio: criterioFinal,
+      udn_destino: b.criterio === 'directo' ? b.udn_destino : null,
+      clasificacion: b.clasificacion || null,
+      nota: b.nota || null,
+    }, { onConflict: 'cuenta_codigo' });
+
+    if (err) { setError('Error al guardar: ' + err.message); return; }
+    setEditandoRegla(null);
+    setNuevaRegla(false);
+    setBorradorRegla({});
+    await cargarReglas();
+    await cargarIngCampana();
+    if (tab === 'visualizar') cargarRegistros();
+  };
+
+  const borrarRegla = async (cod) => {
+    if (!window.confirm(`¿Eliminar la regla de ${cod}?`)) return;
+    await supabase.from('reglas_cuentas').delete().eq('cuenta_codigo', cod);
+    setEditandoRegla(null);
+    await cargarReglas();
+    await cargarIngCampana();
+    if (tab === 'visualizar') cargarRegistros();
+  };
 
   // Filtros visualización
   const [mesesSeleccionados, setMesesSeleccionados] = useState([]);
@@ -231,7 +308,7 @@ export default function EERR() {
   const [ingCampana, setIngCampana] = useState({});
   const [archivos, setArchivos] = useState([]);
 
-  useEffect(() => { cargarMeses(); cargarReglas(); cargarArchivos(); }, []);
+  useEffect(() => { cargarMeses(); cargarReglas(); cargarArchivos(); cargarCatalogo(); }, []);
 
   const cargarArchivos = async () => {
     const { data } = await supabase
@@ -271,6 +348,38 @@ export default function EERR() {
       });
       setMesesPorMoneda(m);
     }
+  };
+
+  const [catalogo, setCatalogo] = useState([]);
+
+  const cargarCatalogo = async () => {
+    let todas = [];
+    let from = 0;
+    while (true) {
+      const { data, error: e } = await supabase
+        .from('balance_mensual')
+        .select('cuenta_codigo, cuenta_desc, tipo, total')
+        .eq('campana', CAMPANA)
+        .range(from, from + 999);
+      if (e || !data || data.length === 0) break;
+      todas = todas.concat(data);
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    const mapa = {};
+    todas.forEach(r => {
+      if (!mapa[r.cuenta_codigo]) {
+        mapa[r.cuenta_codigo] = {
+          cuenta_codigo: r.cuenta_codigo,
+          cuenta_desc: r.cuenta_desc,
+          tipo: r.tipo,
+          monto: 0,
+        };
+      }
+      mapa[r.cuenta_codigo].monto += Math.abs(r.total || 0);
+    });
+    setCatalogo(Object.values(mapa).sort((a, b) =>
+      a.cuenta_codigo.localeCompare(b.cuenta_codigo)));
   };
 
   const cargarReglas = async () => {
@@ -399,19 +508,9 @@ const cargarRegistros = useCallback(async () => {
         });
 
         // Detectar cuentas nuevas sin regla
-        const codigosConRegla = new Set(Object.keys(reglas));
-        const nuevasSinRegla = cuentasProcesadas.filter(c => {
-          const num = parseInt(c.cuenta_codigo);
-          const tieneRangoEspecial =
-            (num >= 431100 && num <= 431115) ||
-            (num >= 431201 && num <= 431210);
-          if (tieneRangoEspecial) return false;
-          const tienePrefijoRegla = ['411','412','413','414','421','422','423',
-            '441','451','461','471','480','511','512','513','514','515','516','520']
-            .some(p => c.cuenta_codigo.startsWith(p));
-          if (tienePrefijoRegla) return false;
-          return !codigosConRegla.has(c.cuenta_codigo);
-        });
+        const nuevasSinRegla = cuentasProcesadas.filter(
+          c => !getUdnPorCodigo(c.cuenta_codigo, reglas)
+        );
 
         setDatosMes(cuentasProcesadas);
         setMesActual(mes);
@@ -585,6 +684,67 @@ const consolidar = useCallback(() => {
     );
   };
 
+  function renderEditorRegla(codExistente) {
+    const b = borradorRegla;
+    return (
+      <>
+        <div style={s.editorGrupo}>
+          <span style={s.editorLabel}>CRITERIO</span>
+          {CRITERIOS.map(c => (
+            <button key={c.key} title={c.desc}
+              style={b.criterio === c.key ? s.opcionActive : s.opcion}
+              onClick={() => setBorradorRegla(x => ({ ...x, criterio: c.key }))}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        {b.criterio === 'directo' && (
+          <div style={s.editorGrupo}>
+            <span style={s.editorLabel}>DESTINO</span>
+            {UDN.map(u => (
+              <button key={u.key}
+                style={b.udn_destino === u.key ? s.opcionActive : s.opcion}
+                onClick={() => setBorradorRegla(x => ({ ...x, udn_destino: u.key }))}>
+                {u.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={s.editorGrupo}>
+          <span style={s.editorLabel}>ETIQUETA</span>
+          {ETIQUETAS.map(e => (
+            <button key={e.key} title={e.desc}
+              style={b.clasificacion === e.key
+                ? { ...s.opcionActive, background: e.color, borderColor: e.color, color: '#FFF' }
+                : s.opcion}
+              onClick={() => setBorradorRegla(x => ({
+                ...x, clasificacion: x.clasificacion === e.key ? '' : e.key
+              }))}>
+              {e.label}
+            </button>
+          ))}
+        </div>
+
+        <input style={s.notaInput} placeholder="Nota: por qué se eligió este criterio"
+          value={b.nota || ''}
+          onChange={e => setBorradorRegla(x => ({ ...x, nota: e.target.value }))} />
+
+        <div style={s.editorAcc}>
+          <button style={s.btn} onClick={guardarRegla}>Guardar</button>
+          <button style={s.btnSec}
+            onClick={() => { setEditandoRegla(null); setNuevaRegla(false); setBorradorRegla({}); setError(''); }}>
+            Cancelar
+          </button>
+          {codExistente && (
+            <button style={s.btnSec} onClick={() => borrarRegla(codExistente)}>Eliminar regla</button>
+          )}
+        </div>
+      </>
+    );
+  }
+
   const cuentaEnRevision = cuentasPendientes[cuentaActual];
   const decisionActual = cuentaEnRevision
     ? (decisionesTemp[cuentaEnRevision.cuenta_codigo] || {}) : {};
@@ -621,6 +781,7 @@ const consolidar = useCallback(() => {
           { key: 'importar', label: '📂 Importar' },
           { key: 'visualizar', label: '📊 Visualizar' },
           { key: 'reglas', label: '⚙️ Reglas' },
+          { key: 'conciliacion', label: '⚖️ Conciliación' },
         ].map(t => (
           <button key={t.key}
             style={tab === t.key ? s.tabActive : s.tab}
@@ -1120,53 +1281,239 @@ const consolidar = useCallback(() => {
           </>
         )}
 
+        {/* ── TAB CONCILIACIÓN ── */}
+        {tab === 'conciliacion' && (
+          <Conciliacion moneda={monedaVista} onMoneda={setMonedaVista} />
+        )}
+
         {/* ── TAB REGLAS ── */}
         {tab === 'reglas' && (
           <div style={s.card}>
             <div style={s.cardTitle}>Reglas de imputación</div>
             <div style={s.cardSub}>
-              Se aplican automáticamente al visualizar. Las reglas por prefijo cubren todos los códigos que empiecen con esos 3 dígitos.
+              Cada cuenta tiene un criterio (a dónde va) y una etiqueta (qué tipo de gasto es).
+              Los cambios se aplican al instante sobre el estado de resultados: podés modificar
+              un criterio, ir a Visualizar y ver el impacto.
             </div>
-            <div style={s.tableWrap}>
-              <table style={s.table}>
-                <thead>
-                  <tr>
-                    <th style={s.thCuenta}>Código / Prefijo</th>
-                    <th style={s.th}>Descripción</th>
-                    <th style={s.th}>Criterio</th>
-                    <th style={s.th}>UdN destino</th>
-                    <th style={s.th}>Nota</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.values(reglas)
-                    .sort((a, b) => a.cuenta_codigo.localeCompare(b.cuenta_codigo))
-                    .map((r, i) => (
-                      <tr key={r.cuenta_codigo}
-                        style={{ background: i % 2 === 0 ? '#FFF' : '#F6F1E7' }}>
-                        <td style={s.tdCuenta}>
-                          <span style={s.cod}>{r.cuenta_codigo}</span>
-                          {r.cuenta_codigo.length <= 3 && (
-                            <span style={s.prefijoBadge}>prefijo</span>
-                          )}
-                        </td>
-                        <td style={s.tdCuenta}>{r.cuenta_desc}</td>
-                        <td style={s.tdNum}>
-                          {r.criterio.includes('directo') ? '→ directa'
-                            : r.criterio.includes('prorrateo') ? '÷ prorrateo'
-                            : '✕ excluir'}
-                        </td>
-                        <td style={s.tdNum}>
-                          {UDN.find(u => u.key === r.udn_destino)?.label || '—'}
-                        </td>
-                        <td style={{ ...s.tdCuenta, fontSize: '11px', color: '#8E7E62' }}>
-                          {r.nota || '—'}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
+
+            <div style={s.reglasBar}>
+              <input style={s.buscador} placeholder="Buscar por código o descripción…"
+                value={filtroReglas} onChange={e => setFiltroReglas(e.target.value)} />
+              <button style={s.btn} onClick={abrirNueva}>+ Nueva regla</button>
             </div>
+
+            <div style={s.filtrosReglas}>
+              <div style={s.filtroFila}>
+                <span style={s.filtroLabel}>ESTADO</span>
+                {[
+                  { k: 'todas', l: 'Todas' },
+                  { k: 'propia', l: 'Con regla propia' },
+                  { k: 'heredada', l: 'Heredan del prefijo' },
+                  { k: 'sin', l: 'Sin regla' },
+                ].map(o => (
+                  <button key={o.k} style={filtroEstado === o.k ? s.chipActive : s.chip}
+                    onClick={() => setFiltroEstado(o.k)}>{o.l}</button>
+                ))}
+              </div>
+              <div style={s.filtroFila}>
+                <span style={s.filtroLabel}>DESTINO</span>
+                <button style={filtroDestino === 'todos' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroDestino('todos')}>Todos</button>
+                {UDN.map(u => (
+                  <button key={u.key} style={filtroDestino === u.key ? s.chipActive : s.chip}
+                    onClick={() => setFiltroDestino(u.key)}>{u.label}</button>
+                ))}
+                <button style={filtroDestino === 'prorrateo' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroDestino('prorrateo')}>÷ Prorrateo</button>
+                <button style={filtroDestino === 'excluir' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroDestino('excluir')}>✕ Excluidas</button>
+              </div>
+              <div style={s.filtroFila}>
+                <span style={s.filtroLabel}>ETIQUETA</span>
+                <button style={filtroEtiqueta === 'todas' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroEtiqueta('todas')}>Todas</button>
+                {ETIQUETAS.map(e => (
+                  <button key={e.key} title={e.desc}
+                    style={filtroEtiqueta === e.key
+                      ? { ...s.chipActive, background: e.color, borderColor: e.color }
+                      : s.chip}
+                    onClick={() => setFiltroEtiqueta(e.key)}>{e.label}</button>
+                ))}
+                <button style={filtroEtiqueta === 'sin' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroEtiqueta('sin')}>Sin etiqueta</button>
+                <div style={{ flex: 1 }} />
+                <button style={filtroTipo === 'todos' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroTipo('todos')}>Ingresos y gastos</button>
+                <button style={filtroTipo === 'INGRESO' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroTipo('INGRESO')}>Solo ingresos</button>
+                <button style={filtroTipo === 'GASTO' ? s.chipActive : s.chip}
+                  onClick={() => setFiltroTipo('GASTO')}>Solo gastos</button>
+              </div>
+            </div>
+
+            {error && <div style={s.msgError}>{error}</div>}
+
+            {nuevaRegla && (
+              <div style={s.editorRegla}>
+                <div style={s.editorHead}>Nueva regla</div>
+                <div style={s.editorFila}>
+                  <input style={{ ...s.inputChico, maxWidth: '130px' }} placeholder="Código"
+                    value={borradorRegla.cuenta_codigo}
+                    onChange={e => setBorradorRegla(b => ({ ...b, cuenta_codigo: e.target.value }))} />
+                  <input style={s.inputChico} placeholder="Descripción"
+                    value={borradorRegla.cuenta_desc}
+                    onChange={e => setBorradorRegla(b => ({ ...b, cuenta_desc: e.target.value }))} />
+                </div>
+                {renderEditorRegla()}
+              </div>
+            )}
+
+            {(() => {
+              const codigos = new Set([
+                ...catalogo.map(c => c.cuenta_codigo),
+                ...Object.keys(reglas),
+              ]);
+
+              const items = Array.from(codigos).sort().map(cod => {
+                const cat = catalogo.find(c => c.cuenta_codigo === cod);
+                const propia = reglas[cod] || null;
+                const efectiva = propia || (cod.length === 6 ? getUdnPorCodigo(cod, reglas) : null);
+                return {
+                  cod,
+                  desc: (propia && propia.cuenta_desc) || (cat && cat.cuenta_desc) || '',
+                  tipo: cat ? cat.tipo : (cod.startsWith('5') ? 'INGRESO' : 'GASTO'),
+                  monto: cat ? cat.monto : 0,
+                  propia,
+                  efectiva,
+                  estado: propia ? 'propia' : efectiva ? 'heredada' : 'sin',
+                };
+              });
+
+              const visibles = items.filter(it => {
+                if (filtroEstado !== 'todas' && it.estado !== filtroEstado) return false;
+                if (filtroTipo !== 'todos' && it.tipo !== filtroTipo) return false;
+
+                if (filtroDestino !== 'todos') {
+                  const cr = (it.efectiva && it.efectiva.criterio) || '';
+                  if (filtroDestino === 'prorrateo' && !cr.includes('prorrateo')) return false;
+                  else if (filtroDestino === 'excluir' && cr !== 'excluir') return false;
+                  else if (UDN.some(u => u.key === filtroDestino)
+                    && (!it.efectiva || it.efectiva.udn_destino !== filtroDestino)) return false;
+                }
+
+                if (filtroEtiqueta !== 'todas') {
+                  const et = it.propia ? it.propia.clasificacion : null;
+                  if (filtroEtiqueta === 'sin' ? !!et : et !== filtroEtiqueta) return false;
+                }
+
+                if (filtroReglas.trim()) {
+                  const q = filtroReglas.toLowerCase();
+                  if (!it.cod.includes(q) && !it.desc.toLowerCase().includes(q)) return false;
+                }
+                return true;
+              });
+
+              return (
+                <>
+                  <div style={s.contadorReglas}>
+                    {visibles.length} de {items.length} cuentas
+                    {' · '}
+                    {items.filter(i => i.estado === 'propia').length} con regla propia
+                    {' · '}
+                    {items.filter(i => i.estado === 'heredada').length} heredadas
+                    {items.filter(i => i.estado === 'sin').length > 0 && (
+                      <span style={s.avisoSinRegla}>
+                        {' · '}{items.filter(i => i.estado === 'sin').length} sin regla
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={s.tableWrap}>
+                    <table style={s.table}>
+                      <thead>
+                        <tr>
+                          <th style={s.thCuenta}>Código</th>
+                          <th style={s.th2}>Descripción</th>
+                          <th style={s.th2}>Criterio</th>
+                          <th style={s.th2}>Unidad destino</th>
+                          <th style={s.th2}>Etiqueta</th>
+                          <th style={s.th2}>Origen</th>
+                          <th style={s.th2}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibles.map((it, i) => {
+                          const abierto = editandoRegla === it.cod;
+                          const et = it.propia
+                            ? ETIQUETAS.find(x => x.key === it.propia.clasificacion) : null;
+                          const cr = (it.efectiva && it.efectiva.criterio) || '';
+                          return (
+                            <React.Fragment key={it.cod}>
+                              <tr style={{ background: i % 2 === 0 ? '#FFF' : '#F7F1E4' }}>
+                                <td style={s.tdCuenta}>
+                                  <span style={s.cod}>{it.cod}</span>
+                                  {it.cod.length === 3 && <span style={s.prefijoBadge}>prefijo</span>}
+                                </td>
+                                <td style={s.tdCuenta}>{it.desc || '—'}</td>
+                                <td style={s.tdCuenta}>
+                                  {cr.includes('directo') ? '→ directo'
+                                    : cr.includes('prorrateo') ? '÷ prorrateo'
+                                    : cr === 'excluir' ? '✕ excluir'
+                                    : <span style={s.avisoSinRegla}>⚠ sin regla</span>}
+                                </td>
+                                <td style={s.tdCuenta}>
+                                  {UDN.find(u => u.key === (it.efectiva && it.efectiva.udn_destino))?.label || '—'}
+                                </td>
+                                <td style={s.tdCuenta}>
+                                  {et ? (
+                                    <span style={{ ...s.etiquetaPill, background: et.fondo, color: et.color }}
+                                      title={et.desc}>{et.label}</span>
+                                  ) : <span style={s.sinEtiqueta}>—</span>}
+                                </td>
+                                <td style={s.tdCuenta}>
+                                  {it.estado === 'propia' ? <span style={s.origenPropia}>propia</span>
+                                    : it.estado === 'heredada' ? <span style={s.origenHeredada}>del prefijo</span>
+                                    : <span style={s.origenSin}>ninguna</span>}
+                                </td>
+                                <td style={s.tdCuenta}>
+                                  <button style={s.btnMini} onClick={() => abrirRegla(
+                                    it.propia || {
+                                      cuenta_codigo: it.cod, cuenta_desc: it.desc,
+                                      criterio: (it.efectiva && it.efectiva.criterio) || '',
+                                      udn_destino: (it.efectiva && it.efectiva.udn_destino) || '',
+                                      clasificacion: '', nota: '',
+                                    }
+                                  )}>
+                                    {it.estado === 'propia' ? 'editar' : 'asignar'}
+                                  </button>
+                                </td>
+                              </tr>
+                              {abierto && (
+                                <tr>
+                                  <td colSpan={7} style={s.editorCelda}>
+                                    <div style={s.editorRegla}>
+                                      <div style={s.editorHead}>
+                                        {it.cod} · {it.desc || 'sin descripción'}
+                                        {it.estado === 'heredada' && (
+                                          <span style={s.avisoHereda}>
+                                            {' '}— hoy hereda del prefijo; al guardar tendrá regla propia
+                                          </span>
+                                        )}
+                                      </div>
+                                      {renderEditorRegla(it.propia ? it.cod : null)}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -1286,4 +1633,28 @@ const s = {
   archivoMoneda: { fontSize: '10px', padding: '2px 8px', background: '#FEF0E0', color: '#7E5A12', borderRadius: '10px', fontWeight: '700', flexShrink: 0 },
   monedaBtn: { padding: '3px 11px', fontSize: '11px', fontWeight: '600', background: '#F0EDE4', color: '#5E4E36', border: '1px solid #D6D0C4', borderRadius: '5px', cursor: 'pointer', fontFamily: FUENTE.ui },
   monedaActive: { padding: '3px 11px', fontSize: '11px', fontWeight: '700', background: '#241D17', color: '#D9A441', border: '1px solid #241D17', borderRadius: '5px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  th2: { background: COLOR.oscuro, color: '#FFF', padding: '8px 11px', textAlign: 'left', fontSize: '9.5px', letterSpacing: '0.06em', whiteSpace: 'nowrap', fontWeight: '500' },
+  reglasBar: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '14px' },
+  buscador: { flex: 1, padding: '8px 12px', fontSize: '12px', border: `1px solid ${COLOR.borde}`, borderRadius: '3px', fontFamily: FUENTE.ui, background: '#FFF', color: COLOR.texto, outline: 'none' },
+  editorCelda: { padding: 0, background: '#F7F1E4', borderBottom: `1px solid ${COLOR.linea}` },
+  editorRegla: { padding: '14px 18px', background: '#F7F1E4', border: `1px solid ${COLOR.linea}`, borderRadius: '3px', marginBottom: '12px' },
+  editorHead: { fontSize: '12px', fontWeight: '600', color: COLOR.texto, marginBottom: '12px' },
+  editorFila: { display: 'flex', gap: '8px', marginBottom: '10px' },
+  editorGrupo: { display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', marginBottom: '9px' },
+  editorLabel: { width: '68px', fontSize: '9px', fontWeight: '700', color: COLOR.textoSuave, letterSpacing: '0.12em', flexShrink: 0 },
+  editorAcc: { display: 'flex', gap: '7px', marginTop: '10px' },
+  inputChico: { flex: 1, padding: '7px 11px', fontSize: '12px', border: `1px solid ${COLOR.borde}`, borderRadius: '3px', fontFamily: FUENTE.ui, background: '#FFF', color: COLOR.texto, outline: 'none' },
+  etiquetaPill: { fontSize: '10px', fontWeight: '700', padding: '2px 9px', borderRadius: '999px', letterSpacing: '0.04em' },
+  sinEtiqueta: { fontSize: '10px', color: '#B0A288' },
+  filtrosReglas: { background: '#F7F1E4', border: `1px solid ${COLOR.linea}`, borderRadius: '3px', padding: '10px 14px', marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '7px' },
+  filtroFila: { display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' },
+  filtroLabel: { width: '62px', fontSize: '8.5px', fontWeight: '700', color: COLOR.textoSuave, letterSpacing: '0.12em', flexShrink: 0 },
+  chip: { padding: '3px 10px', fontSize: '10.5px', fontWeight: '500', background: '#FFF', color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '999px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  chipActive: { padding: '3px 10px', fontSize: '10.5px', fontWeight: '600', background: COLOR.oscuro, color: '#D9A441', border: `1px solid ${COLOR.oscuro}`, borderRadius: '999px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  contadorReglas: { fontSize: '11px', color: COLOR.textoSuave, marginBottom: '10px' },
+  avisoSinRegla: { color: '#A9542F', fontWeight: '600' },
+  avisoHereda: { fontSize: '10.5px', color: '#8A7B62', fontWeight: '400' },
+  origenPropia: { fontSize: '10px', padding: '2px 8px', background: '#E4EAD6', color: '#4C5735', borderRadius: '999px' },
+  origenHeredada: { fontSize: '10px', padding: '2px 8px', background: '#F4EFE3', color: '#8A7B62', borderRadius: '999px' },
+  origenSin: { fontSize: '10px', padding: '2px 8px', background: '#F9E7E2', color: '#A9542F', borderRadius: '999px' },
 };

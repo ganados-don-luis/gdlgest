@@ -33,11 +33,11 @@ const MODULOS = [
   },
   {
     key: 'margen',
-    ruta: null,
+    ruta: '/margen',
     color: '#4A5A5C',
     titulo: 'Margen bruto',
     desc: 'Margen por campo y por cultivo, con rinde de indiferencia.',
-    activo: false,
+    activo: true,
   },
   {
     key: 'indicadores',
