@@ -46,6 +46,54 @@ export default function MargenBruto() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [borrador, setBorrador] = useState({});
+  const [arriendos, setArriendos] = useState([]);
+  const [manuales, setManuales] = useState({});
+  const [bArr, setBArr] = useState({});
+  const [bMan, setBMan] = useState({});
+
+  const cargarIndirectosManual = useCallback(async () => {
+    const [a, m] = await Promise.all([
+      supabase.from('mb_arrendamiento').select('*').eq('campana', CAMPANA),
+      supabase.from('mb_indirecto_manual').select('*')
+        .eq('campana', CAMPANA).eq('cultivo', cultivo),
+    ]);
+    setArriendos(a.data || []);
+    const mm = {};
+    (m.data || []).forEach(x => { mm[x.concepto] = x; });
+    setManuales(mm);
+    setBMan({
+      agronomo: (m.data || []).find(x => x.concepto === 'agronomo') || { importe: 0, excluido: true },
+      seguro: (m.data || []).find(x => x.concepto === 'seguro') || { importe: 0, excluido: true },
+      estructura: (m.data || []).find(x => x.concepto === 'estructura') || { importe: 0, excluido: true },
+    });
+  }, [cultivo]);
+
+  const guardarArr = async (campo) => {
+    const b = bArr[campo] || {};
+    const { error: err } = await supabase.from('mb_arrendamiento').upsert({
+      campana: CAMPANA, campo,
+      propio: !!b.propio,
+      importe_usd: parseFloat(b.importe_usd) || 0,
+      modalidad: b.modalidad || null,
+      nota: b.nota || null,
+    }, { onConflict: 'campana,campo' });
+    if (err) { setError('Error: ' + err.message); return; }
+    setMsg(`Arrendamiento de ${campo} guardado.`);
+    cargarIndirectosManual();
+  };
+
+  const guardarMan = async (concepto) => {
+    const b = bMan[concepto] || {};
+    const { error: err } = await supabase.from('mb_indirecto_manual').upsert({
+      campana: CAMPANA, cultivo, concepto,
+      importe: parseFloat(b.importe) || 0,
+      excluido: !!b.excluido,
+      nota: b.nota || null,
+    }, { onConflict: 'campana,cultivo,concepto' });
+    if (err) { setError('Error: ' + err.message); return; }
+    setMsg(`${concepto} actualizado.`);
+    cargarIndirectosManual();
+  };
 
   // ── CARGA ─────────────────────────────────────
   const cargarTodo = useCallback(async () => {
@@ -99,6 +147,7 @@ export default function MargenBruto() {
   }, []);
 
   useEffect(() => { cargarIndirectos(); }, [cargarIndirectos]);
+  useEffect(() => { cargarIndirectosManual(); }, [cargarIndirectosManual]);
 
   // ── CÁLCULO ───────────────────────────────────
   const esEstival = (c) => ESTIVALES.includes(norm(c));
@@ -114,7 +163,6 @@ export default function MargenBruto() {
     const campo = k.split('|')[0];
     fisicaPorCampo[campo] = (fisicaPorCampo[campo] || 0) + v;
   });
-  const totalFisica = Object.values(fisicaPorCampo).reduce((a, b) => a + b, 0);
 
   // arrendamiento por cultivo, según ocupación del campo
   const arrPorCultivo = {};
@@ -122,7 +170,8 @@ export default function MargenBruto() {
     const delCampo = siembra.filter(s => s.campo === campo);
     const hayE = delCampo.some(s => esEstival(s.cultivo));
     const hayI = delCampo.some(s => !esEstival(s.cultivo));
-    const arr = totalFisica > 0 ? (haF / totalFisica) * indirectos.arrendamiento : 0;
+    const reg = arriendos.find(x => norm(x.campo) === norm(campo));
+    const arr = reg ? Number(reg.importe_usd || 0) : 0;
     const aVerano = hayE && hayI ? arr * 0.5 : hayE ? arr : 0;
     const aInvierno = hayE && hayI ? arr * 0.5 : hayI ? arr : 0;
 
@@ -150,29 +199,41 @@ export default function MargenBruto() {
     .reduce((a, s) => a + (s.ha_sembrada || 0), 0);
   const coef = haEstivales > 0 ? haCultivo / haEstivales : 0;
 
-  // lotes del cultivo
-  const lotes = siembra
-    .filter(s => norm(s.cultivo) === cultivo)
-    .map(s => {
-      const co = cosecha.find(c => c.campo === s.campo && c.lote === s.lote
-        && norm(c.cultivo) === cultivo);
-      const cs = costos.filter(c => c.campo === s.campo && c.lote === s.lote
-        && norm(c.cultivo) === cultivo);
-      const ha = baseHa === 'cosechada'
-        ? (s.ha_cosechada || s.ha_sembrada || 0)
-        : (s.ha_sembrada || 0);
-      return {
-        campo: s.campo, lote: s.lote,
-        haSem: s.ha_sembrada || 0,
-        haCos: s.ha_cosechada || s.ha_sembrada || 0,
-        ha,
-        kgCampo: co ? (co.kg_campo || 0) : 0,
-        kgNeto: co ? (co.kg_neto || 0) : 0,
-        laboreos: cs.filter(c => c.concepto === 'laboreo').reduce((a, c) => a + (c.usd || 0), 0),
-        productos: cs.filter(c => c.concepto === 'producto').reduce((a, c) => a + (c.usd || 0), 0),
-      };
-    })
-    .sort((a, b) => (a.campo + a.lote).localeCompare(b.campo + b.lote));
+  // Los lotes se arman con lo que hay cargado de este cultivo:
+  // laboreos y productos (ya filtrados a GDL) más la cosecha.
+  const lotes = (() => {
+    const mapa = {};
+    const clave = (campo, lote) => campo + '|' + lote;
+
+    costos.filter(c => norm(c.cultivo) === cultivo).forEach(c => {
+      const k = clave(c.campo, c.lote);
+      if (!mapa[k]) mapa[k] = { campo: c.campo, lote: c.lote, haLab: 0,
+        kgCampo: 0, kgNeto: 0, laboreos: 0, productos: 0 };
+      if (c.concepto === 'laboreo') {
+        mapa[k].laboreos += (c.usd || 0);
+        mapa[k].haLab = Math.max(mapa[k].haLab, c.cantidad || 0);
+      } else {
+        mapa[k].productos += (c.usd || 0);
+      }
+    });
+
+    cosecha.filter(c => norm(c.cultivo) === cultivo).forEach(c => {
+      const k = clave(c.campo, c.lote);
+      if (!mapa[k]) mapa[k] = { campo: c.campo, lote: c.lote, haLab: 0,
+        kgCampo: 0, kgNeto: 0, laboreos: 0, productos: 0 };
+      mapa[k].kgCampo += (c.kg_campo || 0);
+      mapa[k].kgNeto += (c.kg_neto || 0);
+    });
+
+    return Object.values(mapa).map(l => {
+      const s = siembra.find(x => x.campo === l.campo && x.lote === l.lote
+        && norm(x.cultivo) === cultivo);
+      const haSem = (s && s.ha_sembrada) || l.haLab || 0;
+      const haCos = (s && s.ha_cosechada) || haSem;
+      return { ...l, haSem, haCos,
+        ha: baseHa === 'cosechada' ? haCos : haSem };
+    }).sort((a, b) => (a.campo + a.lote).localeCompare(b.campo + b.lote));
+  })();
 
   const P = param || {};
   const precio = P.precio_usd_tn || 0;
@@ -182,9 +243,14 @@ export default function MargenBruto() {
   const cosPct = P.cosecha_pct || 0;
 
   const haTot = lotes.reduce((a, l) => a + l.ha, 0);
-  const agronCult = indirectos.agronomo * coef;
-  const seguroCult = indirectos.seguro * coef;
-  const estrucCult = indirectos.estructura * coef;
+  const man = (c) => {
+    const m = manuales[c];
+    if (!m || m.excluido) return 0;
+    return Number(m.importe || 0);
+  };
+  const agronCult = man('agronomo');
+  const seguroCult = man('seguro');
+  const estrucCult = man('estructura');
   const arrCult = arrPorCultivo[cultivo] || 0;
 
   const calc = lotes.map(l => {
@@ -270,46 +336,6 @@ export default function MargenBruto() {
     r.readAsBinaryString(file);
   });
 
-  const impSiembra = async (e) => {
-    const file = e.target.files[0]; e.target.value = '';
-    if (!file) return;
-    setError(''); setMsg('');
-    try {
-      const wb = await leerArchivo(file);
-      const hoja = wb.SheetNames.find(n => norm(n).includes('SIEMBRA')) || wb.SheetNames[0];
-      const d = XLSX.utils.sheet_to_json(wb.Sheets[hoja], { header: 1, defval: '' });
-      // localizar columna GDL en la fila de encabezados
-      let filaH = -1, colGdl = -1;
-      for (let i = 0; i < Math.min(8, d.length); i++) {
-        const idx = d[i].findIndex(c => norm(c) === 'GDL');
-        if (idx >= 0) { filaH = i; colGdl = idx; }
-      }
-      if (colGdl < 0) { setError('No se encontró la columna GDL en el plan de siembra.'); return; }
-
-      const regs = [];
-      let campo = '';
-      for (let i = filaH + 1; i < d.length; i++) {
-        if (d[i][0] && String(d[i][0]).trim()) campo = String(d[i][0]).trim();
-        const lote = String(d[i][8] || '').trim();
-        const cult = String(d[i][9] || '').trim();
-        const ha = parseFloat(d[i][colGdl]);
-        if (!cult || !lote || !isFinite(ha) || ha <= 0) continue;
-        if (!/[A-Z]/i.test(cult)) continue;
-        regs.push({
-          campana: CAMPANA, campo, lote, cultivo: norm(cult),
-          ciclo: ESTIVALES.includes(norm(cult)) ? 'estival' : 'invernal',
-          ha_sembrada: ha, ha_cosechada: ha,
-        });
-      }
-      if (!regs.length) { setError('No se detectaron filas válidas.'); return; }
-      await supabase.from('mb_siembra').delete().eq('campana', CAMPANA);
-      const { error: err } = await supabase.from('mb_siembra').insert(regs);
-      if (err) { setError('Error: ' + err.message); return; }
-      setMsg(`✓ Plan de siembra: ${regs.length} registros.`);
-      cargarTodo();
-    } catch (err) { setError('No se pudo leer el archivo.'); }
-  };
-
 // Los nombres de lote difieren entre archivos (BEBIDA vs CAMPAS BEBIDAS).
   // Busca en el plan de siembra el lote que corresponde.
   const emparejarLote = (campo, loteRaw, lista) => {
@@ -335,14 +361,46 @@ export default function MargenBruto() {
     if (!file) return;
     setError(''); setMsg('');
     try {
-      const { data: siembraDb } = await supabase
-        .from('mb_siembra').select('*').eq('campana', CAMPANA);
-      const lista = siembraDb || [];
-      if (!lista.length) {
-        setError('Importá primero el plan de siembra.');
-        return;
-      }
       const wb = await leerArchivo(file);
+
+      // El mismo archivo trae la solapa de lotes: se carga de paso.
+      let lista = [];
+      const hojaLotes = wb.SheetNames.find(n => norm(n).includes('SIEMBRA'));
+      if (hojaLotes) {
+        const dl = XLSX.utils.sheet_to_json(wb.Sheets[hojaLotes], { header: 1, defval: '' });
+        let fh = -1, cg = -1;
+        for (let i = 0; i < Math.min(8, dl.length); i++) {
+          const idx = dl[i].findIndex(c => norm(c) === 'GDL');
+          if (idx >= 0) { fh = i; cg = idx; }
+        }
+        if (cg >= 0) {
+          const rl = [];
+          let campoL = '';
+          for (let i = fh + 1; i < dl.length; i++) {
+            if (dl[i][0] && String(dl[i][0]).trim()) campoL = String(dl[i][0]).trim();
+            const lo = String(dl[i][8] || '').trim();
+            const cu = String(dl[i][9] || '').trim();
+            const ha = parseFloat(dl[i][cg]);
+            if (!cu || !lo || !isFinite(ha) || ha <= 0 || !/[A-Z]/i.test(cu)) continue;
+            rl.push({
+              campana: CAMPANA, campo: campoL, lote: lo, cultivo: norm(cu),
+              ciclo: ESTIVALES.includes(norm(cu)) ? 'estival' : 'invernal',
+              ha_sembrada: ha, ha_cosechada: ha,
+              nombre_archivo: file.name, importado_at: new Date().toISOString(),
+            });
+          }
+          if (rl.length) {
+            await supabase.from('mb_siembra').delete().eq('campana', CAMPANA);
+            await supabase.from('mb_siembra').insert(rl);
+            lista = rl;
+          }
+        }
+      }
+      if (!lista.length) {
+        const { data: sdb } = await supabase
+          .from('mb_siembra').select('*').eq('campana', CAMPANA);
+        lista = sdb || [];
+      }
       const hoja = wb.SheetNames.find(n => norm(n).includes('RINDE')) || wb.SheetNames[0];
       const d = XLSX.utils.sheet_to_json(wb.Sheets[hoja], { header: 1, defval: '' });
       let filaH = -1;
@@ -366,7 +424,11 @@ export default function MargenBruto() {
         const kgC = parseFloat(d[i][iCampoKg]) || 0;
         const kgN = parseFloat(d[i][iNeto]) || 0;
         const prop = kgN > 0 ? gdl / kgN : 1;
-        const loteRaw = String(d[i][iLote] || campo).trim() || campo;
+        let loteRaw = String(d[i][iLote] || '').trim();
+        // Algunas planillas usan esa columna para un estado, no para el lote
+        if (!loteRaw || /^(CERRAD[OA]|ABIERT[OA]|LIQUIDAD[OA]|SI|NO)$/i.test(loteRaw)) {
+          loteRaw = campo;
+        }
         regs.push({
           campana: CAMPANA, campo,
           lote: emparejarLote(campo, loteRaw, lista),
@@ -374,6 +436,7 @@ export default function MargenBruto() {
           fecha_cosecha: null,
           kg_campo: Math.round(kgC * prop),
           kg_neto: Math.round(gdl),
+          nombre_archivo: file.name, importado_at: new Date().toISOString(),
         });
       }
       if (!regs.length) { setError('No se detectaron lotes de GDL.'); return; }
@@ -420,6 +483,7 @@ export default function MargenBruto() {
           cantidad: parseFloat(d[i][20]) || 0,
           unidad: 'ha',
           usd: parseFloat(d[i][25]) || 0,
+          nombre_archivo: file.name, importado_at: new Date().toISOString(),
         });
       }
       if (!regs.length) { setError('No se detectaron laboreos.'); return; }
@@ -436,17 +500,20 @@ export default function MargenBruto() {
     const file = e.target.files[0]; e.target.value = '';
     if (!file) return;
     setError(''); setMsg('');
-    if (siembra.length === 0) {
-      setError('Importá primero el plan de siembra: define qué lotes son de GDL.');
+    const lotesGdlPrevios = new Set([
+      ...siembra.filter(s => norm(s.cultivo) === cultivo)
+        .map(s => norm(s.campo) + '|' + norm(s.lote)),
+      ...costos.filter(c => norm(c.cultivo) === cultivo && c.concepto === 'laboreo')
+        .map(c => norm(c.campo) + '|' + norm(c.lote)),
+    ]);
+    if (lotesGdlPrevios.size === 0) {
+      setError('Importá primero los laboreos: definen qué lotes son de GDL para este cultivo.');
       return;
     }
     try {
       const wb = await leerArchivo(file);
       const d = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
-      const lotesGdl = new Set(
-        siembra.filter(s => norm(s.cultivo) === cultivo)
-          .map(s => norm(s.campo) + '|' + norm(s.lote))
-      );
+      const lotesGdl = lotesGdlPrevios;
       const regs = [];
       for (let i = 7; i < d.length; i++) {
         const cl = String(d[i][3] || '').trim();
@@ -461,6 +528,7 @@ export default function MargenBruto() {
           cantidad: parseFloat(d[i][21]) || 0,
           unidad: 'kg/lt',
           usd: parseFloat(d[i][32]) || 0,
+          nombre_archivo: file.name, importado_at: new Date().toISOString(),
           _k: norm(campo) + '|' + norm(lote),
         });
       }
@@ -480,6 +548,80 @@ export default function MargenBruto() {
 
   const cultivosCargados = Array.from(new Set(siembra.map(s => norm(s.cultivo)))).sort();
 
+  // Devuelve el archivo cargado para un paso, con sus filas y fecha
+  const archivoDe = (origen) => {
+    let filas = [];
+    if (origen === 'siembra') filas = siembra.filter(s => norm(s.cultivo) === cultivo);
+    else if (origen === 'cosecha') filas = cosecha.filter(c => norm(c.cultivo) === cultivo);
+    else filas = costos.filter(c => norm(c.cultivo) === cultivo && c.concepto === origen);
+    if (!filas.length) return null;
+    const nom = filas.find(f => f.nombre_archivo);
+    const fechas = filas.map(f => f.importado_at).filter(Boolean).sort();
+    return {
+      nombre: nom ? nom.nombre_archivo : '(cargado antes del registro de archivos)',
+      filas: filas.length,
+      fecha: fechas.length ? fechas[fechas.length - 1] : null,
+      usd: filas.reduce((a, f) => a + (f.usd || 0), 0),
+    };
+  };
+
+  const Cargado = ({ origen, unidad }) => {
+    const a = archivoDe(origen);
+    if (!a) return <div style={s.sinCargar}>Sin cargar</div>;
+    return (
+      <div style={s.cargado}>
+        <span style={s.checkOk}>✓</span>
+        <span style={s.archivoNom}>{a.nombre}</span>
+        <span style={s.archivoMeta}>
+          {a.filas} {unidad}
+          {a.usd ? ` · ${n0(a.usd)} U$S` : ''}
+          {a.fecha ? ` · ${new Date(a.fecha).toLocaleDateString('es-AR', {
+            day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}
+        </span>
+      </div>
+    );
+  };
+
+  const archivos = (() => {
+    const g = {};
+    const sumar = (origen, filas, extra) => {
+      filas.forEach(f => {
+        const nom = f.nombre_archivo || '(sin registro de archivo)';
+        const k = origen + '|' + nom + '|' + (extra ? f.cultivo : '');
+        if (!g[k]) g[k] = {
+          origen, nombre: nom, cultivo: extra ? f.cultivo : null,
+          filas: 0, fecha: f.importado_at || null,
+        };
+        g[k].filas += 1;
+        if (f.importado_at && (!g[k].fecha || f.importado_at > g[k].fecha)) {
+          g[k].fecha = f.importado_at;
+        }
+      });
+    };
+    sumar('Plan de siembra', siembra, false);
+    sumar('Cosecha', cosecha, true);
+    sumar('Laboreos', costos.filter(c => c.concepto === 'laboreo'), true);
+    sumar('Productos aplicados', costos.filter(c => c.concepto === 'producto'), true);
+    return Object.values(g).sort((a, b) =>
+      (b.fecha || '').localeCompare(a.fecha || ''));
+  })();
+
+  const borrarOrigen = async (a) => {
+    if (!window.confirm(`¿Eliminar los datos de ${a.nombre}${a.cultivo ? ' · ' + a.cultivo : ''}?`)) return;
+    if (a.origen === 'Plan de siembra') {
+      await supabase.from('mb_siembra').delete().eq('campana', CAMPANA);
+    } else if (a.origen === 'Cosecha') {
+      await supabase.from('mb_cosecha').delete()
+        .eq('campana', CAMPANA).eq('cultivo', a.cultivo);
+    } else {
+      const con = a.origen === 'Laboreos' ? 'laboreo' : 'producto';
+      await supabase.from('mb_costo_lote').delete()
+        .eq('campana', CAMPANA).eq('cultivo', a.cultivo).eq('concepto', con);
+    }
+    setMsg(`Se eliminaron los datos de ${a.nombre}.`);
+    cargarTodo();
+  };
+
   return (
     <div style={s.container}>
       <div style={s.header}>
@@ -495,7 +637,8 @@ export default function MargenBruto() {
 
       <div style={s.tabs}>
         {[['resultado', 'Resultado'], ['fisico', 'Producción física'],
-          ['parametros', 'Parámetros'], ['datos', 'Importar datos']]
+          ['indirectos', 'Indirectos'], ['parametros', 'Parámetros'],
+          ['datos', 'Importar datos']]
           .map(([k, l]) => (
             <button key={k} style={tab === k ? s.tabActive : s.tab} onClick={() => setTab(k)}>
               {l}
@@ -830,6 +973,121 @@ export default function MargenBruto() {
           )
         )}
 
+        {/* ── INDIRECTOS ── */}
+        {tab === 'indirectos' && (
+          <>
+            <div style={s.card}>
+              <div style={s.cardTitle}>Arrendamiento por campo</div>
+              <div style={s.cardSub}>
+                Cada campo tiene su propio valor. El sistema lo reparte según la ocupación:
+                si el campo tuvo un solo ciclo, ese cultivo carga el total; si tuvo invierno
+                y verano, se divide por mitades. Dentro del ciclo, por hectárea.
+              </div>
+              <div style={s.tableWrap}>
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={s.thL}>Campo</th>
+                      <th style={s.thC}>Propio</th>
+                      <th style={s.thR}>ha físicas</th>
+                      <th style={s.thL}>Cultivos del año</th>
+                      <th style={s.thR}>Arrendamiento U$S</th>
+                      <th style={s.thL}>Modalidad</th>
+                      <th style={s.thL}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(fisicaPorCampo).sort().map(([campo, haF], i) => {
+                      const reg = arriendos.find(x => norm(x.campo) === norm(campo)) || {};
+                      const b = bArr[campo] || {
+                        propio: reg.propio || false,
+                        importe_usd: reg.importe_usd ?? '',
+                        modalidad: reg.modalidad || '',
+                      };
+                      const cul = siembra.filter(x => x.campo === campo).map(x => x.cultivo);
+                      const ciclos = new Set(cul.map(c => esEstival(c) ? 'V' : 'I'));
+                      return (
+                        <tr key={campo} style={{ background: i % 2 === 0 ? COLOR.papel : COLOR.fila }}>
+                          <td style={s.tdL}>{campo}</td>
+                          <td style={s.tdC}>
+                            <input type="checkbox" checked={!!b.propio}
+                              onChange={e => setBArr(x => ({ ...x, [campo]: { ...b, propio: e.target.checked } }))} />
+                          </td>
+                          <td style={s.tdR}>{n1(haF)}</td>
+                          <td style={s.tdL}>
+                            {Array.from(new Set(cul)).join(' · ')}
+                            <span style={ciclos.size > 1 ? s.pillDoble : s.pillSimple}>
+                              {ciclos.size > 1 ? '2 ciclos · 50/50' : '1 ciclo · 100%'}
+                            </span>
+                          </td>
+                          <td style={s.tdR}>
+                            <input style={s.inputMini} type="number" step="any"
+                              disabled={b.propio}
+                              value={b.propio ? '' : b.importe_usd}
+                              onChange={e => setBArr(x => ({ ...x, [campo]: { ...b, importe_usd: e.target.value } }))} />
+                          </td>
+                          <td style={s.tdL}>
+                            <input style={s.inputMini} placeholder="qq/ha, fijo…"
+                              value={b.modalidad}
+                              onChange={e => setBArr(x => ({ ...x, [campo]: { ...b, modalidad: e.target.value } }))} />
+                          </td>
+                          <td style={s.tdL}>
+                            <button style={s.btnMini2} onClick={() => guardarArr(campo)}>guardar</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    <tr style={s.trDestaca}>
+                      <td style={s.tdDestacaL} colSpan={4}>TOTAL CARGADO</td>
+                      <td style={s.tdDestacaR}>
+                        {n0(arriendos.reduce((a, x) => a + Number(x.importe_usd || 0), 0))}
+                      </td>
+                      <td colSpan={2}></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style={s.nota}>
+                Control contable: la cuenta 423102 del balance acumula {n0(indirectos.arrendamiento)} U$S
+                en los meses cargados. Si la suma de arriba difiere mucho, revisar.
+                Asignado a {cultivo}: <strong>{n0(arrCult)} U$S</strong>.
+              </div>
+            </div>
+
+            <div style={s.card}>
+              <div style={s.cardTitle}>Otros indirectos de {cultivo}</div>
+              <div style={s.cardSub}>
+                Importes cargados a mano mientras se define el criterio. Marcados como excluidos
+                no impactan en el margen.
+              </div>
+              {[['agronomo', 'Ing. agrónomo', indirectos.agronomo],
+                ['seguro', 'Seguro agrícola', indirectos.seguro],
+                ['estructura', 'Estructura', indirectos.estructura]].map(([k, l, ref]) => {
+                const b = bMan[k] || {};
+                return (
+                  <div key={k} style={s.manFila}>
+                    <span style={s.manLabel}>{l}</span>
+                    <label style={s.check}>
+                      <input type="checkbox" checked={!!b.excluido}
+                        onChange={e => setBMan(x => ({ ...x, [k]: { ...b, excluido: e.target.checked } }))}
+                        style={{ marginRight: '5px' }} />
+                      Excluir
+                    </label>
+                    <input style={s.inputMini} type="number" step="any" disabled={!!b.excluido}
+                      value={b.excluido ? '' : (b.importe ?? '')}
+                      onChange={e => setBMan(x => ({ ...x, [k]: { ...b, importe: e.target.value } }))} />
+                    <input style={{ ...s.inputMini, flex: 1 }} placeholder="Nota"
+                      value={b.nota || ''}
+                      onChange={e => setBMan(x => ({ ...x, [k]: { ...b, nota: e.target.value } }))} />
+                    <span style={s.manRef}>balance: {n0(ref)}</span>
+                    <button style={s.btnMini2} onClick={() => guardarMan(k)}>guardar</button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
         {/* ── PARÁMETROS ── */}
         {tab === 'parametros' && (
           <>
@@ -896,59 +1154,76 @@ export default function MargenBruto() {
         {/* ── IMPORTAR ── */}
         {tab === 'datos' && (
           <>
-            <div style={s.card}>
-              <div style={s.cardTitle}>1 · Plan de siembra</div>
-              <div style={s.cardSub}>
-                Define qué lotes son de GDL y con qué superficie. Se lee la columna GDL de la solapa
-                PLAN DE SIEMBRA DETALLADO. Es el primer archivo a cargar: el resto se filtra contra él.
-              </div>
-              <input type="file" accept=".xls,.xlsx" onChange={impSiembra}
-                style={{ display: 'none' }} id="f-siembra" />
-              <label htmlFor="f-siembra" style={s.btn}>Subir plan de siembra</label>
-              <span style={s.info}>{siembra.length} registros · {cultivosCargados.length} cultivos</span>
+            <div style={s.avisoCultivo}>
+              Estás cargando datos de <strong>{cultivo}</strong>. Los pasos 2, 3 y 4 guardan
+              en ese cultivo: cambialo arriba antes de subir archivos de otro.
             </div>
 
             <div style={s.card}>
-              <div style={s.cardTitle}>2 · Cosecha de {cultivo}</div>
+              <div style={s.cardTitle}>1 · Cosecha de {cultivo}</div>
               <div style={s.cardSub}>
-                Solapa RINDE X CAMPO. Toma los kilos de la columna GDL y prorratea los kilos de campo
-                en la misma proporción.
+                Archivo de cosecha del cultivo. Toma los kilos de la columna GDL de la solapa
+                RINDE X CAMPO, y de paso actualiza el listado de lotes y superficies desde la
+                solapa de siembra del mismo archivo.
               </div>
               <input type="file" accept=".xls,.xlsx" onChange={impCosecha}
                 style={{ display: 'none' }} id="f-cosecha" />
-              <label htmlFor="f-cosecha" style={s.btn}>Subir cosecha</label>
-              <span style={s.info}>
-                {cosecha.filter(c => norm(c.cultivo) === cultivo).length} lotes cargados
-              </span>
+              <label htmlFor="f-cosecha" style={s.btn}>
+                {archivoDe('cosecha') ? 'Reemplazar cosecha' : 'Subir cosecha'}
+              </label>
+              <Cargado origen="cosecha" unidad="lotes" />
             </div>
 
             <div style={s.card}>
-              <div style={s.cardTitle}>3 · Laboreos de {cultivo}</div>
+              <div style={s.cardTitle}>2 · Laboreos de {cultivo}</div>
               <div style={s.cardSub}>
                 Listado de Laboreos por Socios, en dólares. Se toma únicamente la sección del socio 1.
               </div>
               <input type="file" accept=".xls,.xlsx" onChange={impLaboreos}
                 style={{ display: 'none' }} id="f-laboreos" />
-              <label htmlFor="f-laboreos" style={s.btn}>Subir laboreos</label>
-              <span style={s.info}>
-                {costos.filter(c => norm(c.cultivo) === cultivo && c.concepto === 'laboreo').length} registros
-                · {n0(sumLab)} U$S
-              </span>
+              <label htmlFor="f-laboreos" style={s.btn}>
+                {archivoDe('laboreo') ? 'Reemplazar laboreos' : 'Subir laboreos'}
+              </label>
+              <Cargado origen="laboreo" unidad="registros" />
             </div>
 
             <div style={s.card}>
-              <div style={s.cardTitle}>4 · Productos aplicados de {cultivo}</div>
+              <div style={s.cardTitle}>3 · Productos aplicados de {cultivo}</div>
               <div style={s.cardSub}>
                 Listado Total de Productos Aplicados. Trae lotes de todas las firmas: se filtran
                 contra los lotes del plan de siembra de GDL.
               </div>
               <input type="file" accept=".xls,.xlsx" onChange={impProductos}
                 style={{ display: 'none' }} id="f-productos" />
-              <label htmlFor="f-productos" style={s.btn}>Subir productos</label>
-              <span style={s.info}>
-                {costos.filter(c => norm(c.cultivo) === cultivo && c.concepto === 'producto').length} registros
-                · {n0(sumProd)} U$S
-              </span>
+              <label htmlFor="f-productos" style={s.btn}>
+                {archivoDe('producto') ? 'Reemplazar productos' : 'Subir productos'}
+              </label>
+              <Cargado origen="producto" unidad="registros" />
+            </div>
+
+            <div style={s.card}>
+              <div style={s.cardTitle}>Archivos importados</div>
+              <div style={s.cardSub}>
+                Cada carga reemplaza por completo los datos anteriores de ese origen y cultivo.
+              </div>
+              {archivos.length === 0 ? (
+                <div style={s.vacio}>Todavía no importaste ningún archivo.</div>
+              ) : archivos.map((a, i) => (
+                <div key={i} style={s.archivoItem}>
+                  <span style={s.origenPill}>{a.origen}</span>
+                  <span style={s.archivoNombre}>{a.nombre}</span>
+                  {a.cultivo && <span style={s.cultivoPill}>{a.cultivo}</span>}
+                  <span style={s.archivoDato}>{a.filas} filas</span>
+                  <span style={s.archivoDato}>
+                    {a.fecha ? new Date(a.fecha).toLocaleDateString('es-AR', {
+                      day: '2-digit', month: '2-digit', year: '2-digit',
+                      hour: '2-digit', minute: '2-digit',
+                    }) : '—'}
+                  </span>
+                  <button style={s.archivoEliminar} onClick={() => borrarOrigen(a)}
+                    title="Eliminar estos datos">×</button>
+                </div>
+              ))}
             </div>
           </>
         )}
@@ -1020,4 +1295,24 @@ const s = {
   tdU: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, color: COLOR.textoTenue, fontSize: '10px', whiteSpace: 'nowrap' },
   tdRprecio: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, textAlign: 'center', color: COLOR.textoSuave, fontVariantNumeric: 'tabular-nums', fontStyle: 'italic' },
   seccion: { background: '#4A3520', color: '#E6C070', padding: '5px 11px', fontWeight: '600', fontSize: '9.5px', letterSpacing: '0.1em' },
+  archivoItem: { display: 'flex', alignItems: 'center', gap: '9px', padding: '7px 11px', background: COLOR.fila, border: `1px solid ${COLOR.linea}`, borderRadius: '2px', marginBottom: '5px', fontSize: '12px' },
+  origenPill: { fontSize: '9.5px', fontWeight: '600', padding: '2px 9px', background: COLOR.oscuro, color: COLOR.bronceClaro, borderRadius: '999px', flexShrink: 0, minWidth: '96px', textAlign: 'center' },
+  cultivoPill: { fontSize: '9.5px', fontWeight: '600', padding: '2px 9px', background: COLOR.okFondo, color: COLOR.ok, borderRadius: '999px', flexShrink: 0 },
+  archivoNombre: { flex: 1, color: COLOR.texto, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  archivoDato: { fontSize: '10.5px', color: COLOR.textoTenue, flexShrink: 0 },
+  archivoEliminar: { background: 'none', border: 'none', color: COLOR.textoTenue, fontSize: '17px', cursor: 'pointer', padding: '0 2px', lineHeight: 1, flexShrink: 0 },
+  vacio: { fontSize: '11.5px', color: COLOR.textoTenue, padding: '8px 0' },
+  cargado: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', padding: '7px 11px', background: COLOR.okFondo, borderLeft: `3px solid ${COLOR.ok}`, borderRadius: '2px', fontSize: '11.5px', flexWrap: 'wrap' },
+  checkOk: { color: COLOR.ok, fontWeight: '700', flexShrink: 0 },
+  archivoNom: { color: COLOR.ok, fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' },
+  archivoMeta: { color: COLOR.textoSuave, fontSize: '10.5px' },
+  sinCargar: { marginTop: '10px', padding: '7px 11px', background: '#F4EFE3', borderLeft: '3px solid #D8CDB6', borderRadius: '2px', fontSize: '11.5px', color: COLOR.textoTenue },
+  avisoCultivo: { padding: '9px 13px', background: '#FBEBCB', borderLeft: '3px solid #C08A23', borderRadius: '2px', fontSize: '11.5px', color: '#7E5A12', marginBottom: '14px' },
+  inputMini: { padding: '4px 8px', fontSize: '11px', border: `1px solid ${COLOR.borde}`, borderRadius: '2px', fontFamily: FUENTE.ui, background: COLOR.papel, color: COLOR.texto, outline: 'none', width: '110px', textAlign: 'right' },
+  btnMini2: { padding: '3px 10px', fontSize: '10px', background: COLOR.oscuro, color: COLOR.bronceClaro, border: 'none', borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  pillDoble: { marginLeft: '8px', fontSize: '9px', padding: '1px 7px', background: '#FBEBCB', color: '#7E5A12', borderRadius: '999px' },
+  pillSimple: { marginLeft: '8px', fontSize: '9px', padding: '1px 7px', background: COLOR.okFondo, color: COLOR.ok, borderRadius: '999px' },
+  manFila: { display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderBottom: `1px solid ${COLOR.linea}`, flexWrap: 'wrap' },
+  manLabel: { width: '130px', fontSize: '12px', color: COLOR.texto, flexShrink: 0 },
+  manRef: { fontSize: '10px', color: COLOR.textoTenue, flexShrink: 0 },
 };
