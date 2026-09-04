@@ -1,13 +1,138 @@
-body {
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  background-color: #EDE4D2;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color: #2E2519;
+  overflow-x: hidden;
 }
 
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+}
+
+/* Scroll táctil horizontal suave */
+.touch-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #D8CDB6 transparent;
+}
+
+.touch-scroll::-webkit-scrollbar {
+  height: 5px;
+  width: 5px;
+}
+
+.touch-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.touch-scroll::-webkit-scrollbar-thumb {
+  background: #C4B89F;
+  border-radius: 4px;
+}
+
+.touch-scroll::-webkit-scrollbar-thumb:hover {
+  background: #B8873B;
+}
+
+/* Indicador de scroll para tablas en celulares */
+.scroll-hint {
+  display: none;
+  font-size: 10px;
+  color: #8A7B62;
+  text-align: right;
+  padding: 4px 8px;
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 768px) {
+  .scroll-hint {
+    display: block;
+  }
+}
+
+/* Grillas responsivas para aprovechar pantallas en computadoras */
+.responsive-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 860px) {
+  .responsive-grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.responsive-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+@media (min-width: 768px) {
+  .responsive-grid-3 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1120px) {
+  .responsive-grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Estilos para interactividad y hover en tablas */
+.interactive-table tr:hover td {
+  background-color: rgba(217, 164, 65, 0.07) !important;
+}
+
+/* Animaciones sutiles */
+.tab-transition {
+  transition: all 0.18s ease-in-out;
+}
+
+.tab-transition:hover {
+  filter: brightness(1.1);
+}
+
+/* Mejoras en elementos interactivos */
+button, input, select, textarea {
+  font-family: inherit;
+  touch-action: manipulation;
+}
+
+/* Prevenir zoom forzado al hacer foco en inputs en iOS Safari */
+@media screen and (max-width: 768px) {
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }

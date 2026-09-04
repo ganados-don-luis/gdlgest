@@ -19,33 +19,37 @@ const MODULOS = [
     key: 'eerr',
     ruta: '/eerr',
     color: '#7C8460',
+    icono: '📊',
     titulo: 'Estado de resultados',
-    desc: 'Importación del Balance por Sector y resultado por unidad de negocio, en U$S y AR$.',
+    desc: 'Importación del Balance por Sector y análisis de resultado por unidad de negocio en U$S y AR$.',
     activo: true,
   },
   {
     key: 'flujo',
-    ruta: null,
+    ruta: '/flujo',
     color: '#A9542F',
+    icono: '🏦',
     titulo: 'Flujo de fondos',
-    desc: 'Ingresos y egresos por banco, conciliación diaria y proyección.',
-    activo: false,
+    desc: 'Ingresos y egresos proyectados 2026, cheques en cartera, préstamos, cash flow e impuestos.',
+    activo: true,
   },
   {
     key: 'margen',
     ruta: '/margen',
     color: '#4A5A5C',
-    titulo: 'Margen bruto',
-    desc: 'Margen por campo y por cultivo, con rinde de indiferencia.',
+    icono: '🌾',
+    titulo: 'Margen bruto agrícola',
+    desc: 'Margen por campo y por lote por cultivo, insumos aplicados y rindes de indiferencia.',
     activo: true,
   },
   {
     key: 'indicadores',
-    ruta: null,
+    ruta: '/indicadores',
     color: '#C08A23',
-    titulo: 'Indicadores',
-    desc: 'Tablero de seguimiento con la evolución de cada unidad de negocio.',
-    activo: false,
+    icono: '📈',
+    titulo: 'Indicadores de gestión',
+    desc: 'Tablero ejecutivo con indicadores cruzados de MacroGest y planillas internas de campo.',
+    activo: true,
   },
 ];
 
@@ -64,14 +68,15 @@ export default function Inicio() {
 
         <div style={s.azulejos}>
           {MODULOS.map(m => (
-            <div key={m.key} style={{ height: '34px', background: m.color }} />
+            <div key={m.key} style={{ height: '5px', background: m.color, borderRadius: '2px' }} />
           ))}
         </div>
 
         <div style={s.head}>
           <div>
-            <h1 style={s.titulo}>Ganados Don Luis</h1>
-            <p style={s.sub}>SISTEMA DE GESTIÓN · CAMPAÑA 2025-2026</p>
+            <div style={s.tagline}>SISTEMA DE GESTIÓN Y CONTROL DIRECTIVO</div>
+            <h1 style={s.titulo}>Ganados Don Luis S.A.</h1>
+            <p style={s.sub}>PLANIFICACIÓN, GESTIÓN & RESULTADOS</p>
           </div>
           <button style={s.salir} onClick={cerrarSesion}>Cerrar sesión</button>
         </div>
@@ -83,11 +88,20 @@ export default function Inicio() {
               onClick={m.activo ? () => navigate(m.ruta) : undefined}>
               <div style={{ ...s.barra, background: m.activo ? m.color : '#D8CDB6' }} />
               <div style={s.cardBody}>
-                <div style={s.cardTitulo}>{m.titulo}</div>
+                <div style={s.cardHeader}>
+                  <span style={s.cardIcono}>{m.icono}</span>
+                  <div style={s.cardTitulo}>{m.titulo}</div>
+                </div>
                 <div style={s.cardDesc}>{m.desc}</div>
-                {m.activo
-                  ? <div style={{ ...s.entrar, color: m.color }}>Entrar →</div>
-                  : <div style={s.proximo}>En desarrollo</div>}
+                <div style={s.cardFooter}>
+                  {m.activo ? (
+                    <span style={{ ...s.entrar, color: m.color }}>
+                      Acceder al módulo <span style={{ marginLeft: '4px' }}>→</span>
+                    </span>
+                  ) : (
+                    <span style={s.proximo}>Próximamente</span>
+                  )}
+                </div>
               </div>
             </div>
           ))}
@@ -100,21 +114,151 @@ export default function Inicio() {
 }
 
 const s = {
-  container: { minHeight: '100vh', background: COLOR.fondo, padding: '36px 24px', fontFamily: FUENTE.ui },
-  wrap: { maxWidth: '720px', margin: '0 auto' },
-  azulejos: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '2px', marginBottom: '26px' },
-  head: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', paddingBottom: '16px', marginBottom: '22px', borderBottom: '1px solid ' + COLOR.borde, gap: '16px', flexWrap: 'wrap' },
-  titulo: { fontSize: '32px', fontWeight: '500', color: COLOR.oscuro, fontFamily: FUENTE.titulo, margin: 0, lineHeight: 1.1 },
-  sub: { fontSize: '9.5px', color: COLOR.textoSuave, letterSpacing: '0.2em', margin: '7px 0 0' },
-  salir: { padding: '6px 14px', fontSize: '10px', fontWeight: '500', fontFamily: FUENTE.ui, background: 'transparent', color: COLOR.bronce, border: '1px solid ' + COLOR.bronce, borderRadius: '2px', cursor: 'pointer', letterSpacing: '0.1em' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' },
-  card: { background: COLOR.papel, border: '1px solid ' + COLOR.borde, borderRadius: '3px', overflow: 'hidden', cursor: 'pointer', display: 'flex', flexDirection: 'column' },
-  cardOff: { background: '#F7F1E4', border: '1px solid ' + COLOR.borde, borderRadius: '3px', overflow: 'hidden', cursor: 'default', display: 'flex', flexDirection: 'column' },
-  barra: { height: '4px' },
-  cardBody: { padding: '18px 20px 16px', flex: 1, display: 'flex', flexDirection: 'column' },
-  cardTitulo: { fontSize: '17px', fontWeight: '500', color: COLOR.oscuro, fontFamily: FUENTE.titulo, marginBottom: '6px' },
-  cardDesc: { fontSize: '12px', color: COLOR.textoSuave, lineHeight: '1.6', flex: 1 },
-  entrar: { fontSize: '11px', fontWeight: '500', letterSpacing: '0.08em', marginTop: '14px' },
-  proximo: { fontSize: '10px', color: COLOR.textoTenue, letterSpacing: '0.1em', marginTop: '14px' },
-  pie: { fontSize: '9px', color: COLOR.textoTenue, textAlign: 'center', letterSpacing: '0.2em', marginTop: '30px' },
+  container: {
+    minHeight: '100vh',
+    background: COLOR.fondo,
+    padding: '36px 20px',
+    fontFamily: FUENTE.ui,
+    boxSizing: 'border-box',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  wrap: {
+    maxWidth: '1050px',
+    margin: '0 auto',
+    width: '100%',
+  },
+  azulejos: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: '6px',
+    marginBottom: '26px',
+  },
+  head: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    paddingBottom: '20px',
+    marginBottom: '28px',
+    borderBottom: '1px solid ' + COLOR.borde,
+    gap: '16px',
+    flexWrap: 'wrap',
+  },
+  tagline: {
+    fontSize: '9.5px',
+    fontWeight: '700',
+    color: COLOR.bronce,
+    letterSpacing: '0.18em',
+    marginBottom: '4px',
+  },
+  titulo: {
+    fontSize: '34px',
+    fontWeight: '500',
+    color: COLOR.oscuro,
+    fontFamily: FUENTE.titulo,
+    margin: 0,
+    lineHeight: 1.15,
+  },
+  sub: {
+    fontSize: '10px',
+    color: COLOR.textoSuave,
+    letterSpacing: '0.14em',
+    margin: '6px 0 0',
+  },
+  salir: {
+    padding: '9px 16px',
+    fontSize: '11px',
+    fontWeight: '600',
+    fontFamily: FUENTE.ui,
+    background: 'transparent',
+    color: COLOR.bronce,
+    border: '1px solid ' + COLOR.bronce,
+    borderRadius: '4px',
+    cursor: 'pointer',
+    letterSpacing: '0.06em',
+    touchAction: 'manipulation',
+    transition: 'all 0.15s ease',
+  },
+  grid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: '20px',
+  },
+  card: {
+    background: COLOR.papel,
+    border: '1px solid ' + COLOR.borde,
+    borderRadius: '8px',
+    overflow: 'hidden',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    boxShadow: '0 4px 14px rgba(36,29,23,0.06)',
+    transition: 'transform 0.18s ease, box-shadow 0.18s ease',
+  },
+  cardOff: {
+    background: '#F8F4EC',
+    border: '1px dashed ' + COLOR.borde,
+    borderRadius: '8px',
+    overflow: 'hidden',
+    cursor: 'default',
+    display: 'flex',
+    flexDirection: 'column',
+    opacity: 0.85,
+  },
+  barra: {
+    height: '6px',
+  },
+  cardBody: {
+    padding: '22px 22px 18px',
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  cardHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    marginBottom: '10px',
+  },
+  cardIcono: {
+    fontSize: '22px',
+  },
+  cardTitulo: {
+    fontSize: '20px',
+    fontWeight: '500',
+    color: COLOR.oscuro,
+    fontFamily: FUENTE.titulo,
+  },
+  cardDesc: {
+    fontSize: '12.5px',
+    color: COLOR.textoSuave,
+    lineHeight: '1.6',
+    flex: 1,
+  },
+  cardFooter: {
+    marginTop: '20px',
+    paddingTop: '12px',
+    borderTop: '1px solid #F3EDE2',
+  },
+  entrar: {
+    fontSize: '12px',
+    fontWeight: '700',
+    letterSpacing: '0.04em',
+    display: 'inline-flex',
+    alignItems: 'center',
+  },
+  proximo: {
+    fontSize: '11px',
+    color: COLOR.textoTenue,
+    letterSpacing: '0.05em',
+    fontWeight: '500',
+  },
+  pie: {
+    fontSize: '10px',
+    color: COLOR.textoTenue,
+    textAlign: 'center',
+    letterSpacing: '0.15em',
+    marginTop: '36px',
+  },
 };

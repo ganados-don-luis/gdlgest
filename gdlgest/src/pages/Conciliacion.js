@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../supabase';
-
-const CAMPANA = '2025-2026';
+import { getTcContador } from '../campanas';
 
 const COLOR = {
   fondo: '#EDE4D2', papel: '#FFFFFF', fila: '#F7F1E4', linea: '#E9E0CE',
@@ -58,7 +57,7 @@ const mapCols = (headers) => {
   return m;
 };
 
-export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
+export default function Conciliacion({ moneda = 'ARS', onMoneda, campana = '2025-2026' }) {
   const [conta, setConta] = useState([]);
   const [gestion, setGestion] = useState([]);
   const [ajustes, setAjustes] = useState({});
@@ -72,12 +71,20 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
   const [borrador, setBorrador] = useState({});
   const [monedaCarga, setMonedaCarga] = useState('ARS');
   const [resumen, setResumen] = useState([]);
+  
+  // Tipo de cambio del contador (1.376,17 AR$/USD en 2025-2026)
+  const [tcContador, setTcContador] = useState(getTcContador(campana));
+  const [convertirTcContador, setConvertirTcContador] = useState(true);
+
+  useEffect(() => {
+    setTcContador(getTcContador(campana));
+  }, [campana]);
 
   const cargarResumen = useCallback(async () => {
     const { data } = await supabase
       .from('consolidado_gestion')
       .select('moneda, nombre_archivo, importado_at')
-      .eq('campana', CAMPANA);
+      .eq('campana', campana);
     if (!data) { setResumen([]); return; }
     const g = {};
     data.forEach(r => {
@@ -87,14 +94,14 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
       if (r.importado_at > g[k].fecha) g[k].fecha = r.importado_at;
     });
     setResumen(Object.values(g).sort((a, b) => a.moneda.localeCompare(b.moneda)));
-  }, []);
+  }, [campana]);
 
   const eliminarConsolidado = async (mon, nombre) => {
     if (!window.confirm(`¿Eliminar ${nombre} y todos sus datos en ${mon === 'ARS' ? 'AR$' : 'U$S'}?`)) return;
     await supabase.from('consolidado_gestion')
-      .delete().eq('campana', CAMPANA).eq('moneda', mon);
+      .delete().eq('campana', campana).eq('moneda', mon);
     await supabase.from('ajustes_conciliacion')
-      .delete().eq('campana', CAMPANA).eq('moneda', mon);
+      .delete().eq('campana', campana).eq('moneda', mon);
     setMsg(`Se eliminó ${nombre} y sus ajustes en ${mon === 'ARS' ? 'AR$' : 'U$S'}.`);
     await cargarResumen();
     cargarTodo();
@@ -108,7 +115,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
     while (true) {
       const { data, error: e } = await supabase
         .from('balance_mensual').select('*')
-        .eq('campana', CAMPANA).eq('moneda', moneda)
+        .eq('campana', campana).eq('moneda', moneda)
         .range(from, from + 999);
       if (e || !data || data.length === 0) break;
       filas = filas.concat(data);
@@ -129,20 +136,22 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
     });
     setConta(Object.values(acum));
 
+    // Cargar datos de gestión en la moneda actual
     const { data: g } = await supabase
       .from('consolidado_gestion').select('*')
-      .eq('campana', CAMPANA).eq('moneda', moneda);
+      .eq('campana', campana);
+    
     setGestion(g || []);
 
     const { data: a } = await supabase
       .from('ajustes_conciliacion').select('*')
-      .eq('campana', CAMPANA).eq('moneda', moneda);
+      .eq('campana', campana).eq('moneda', moneda);
     const mapa = {};
     (a || []).forEach(x => { mapa[x.cuenta_codigo] = x; });
     setAjustes(mapa);
 
     setCargando(false);
-  }, [moneda]);
+  }, [moneda, campana]);
 
   useEffect(() => { cargarTodo(); }, [cargarTodo]);
   useEffect(() => { cargarResumen(); }, [cargarResumen]);
@@ -178,7 +187,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
           if (!/^\d{6}$/.test(cod)) continue;
           if (!(cod.startsWith('4') || cod.startsWith('5'))) continue;
           const r = {
-            campana: CAMPANA, moneda: mon,
+            campana, moneda: mon,
             cuenta_codigo: cod,
             cuenta_desc: String(data[i][1] || '').trim(),
             nombre_archivo: file.name,
@@ -200,7 +209,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
         }
 
         await supabase.from('consolidado_gestion')
-          .delete().eq('campana', CAMPANA).eq('moneda', mon);
+          .delete().eq('campana', campana).eq('moneda', mon);
         const { error: err } = await supabase.from('consolidado_gestion').insert(regs);
         if (err) { setError('Error al guardar: ' + err.message); return; }
 
@@ -219,8 +228,43 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
   const col = udnFiltro;
   const mapaConta = {};
   conta.forEach(c => { mapaConta[c.cuenta_codigo] = c; });
+  
+  // Buscar registros de gestión en la misma moneda o aplicar conversión si corresponde
   const mapaGest = {};
-  gestion.forEach(g => { mapaGest[g.cuenta_codigo] = g; });
+  gestion.forEach(g => {
+    // Si la moneda coincide exactamente
+    if (g.moneda === moneda) {
+      mapaGest[g.cuenta_codigo] = g;
+    } 
+    // Si estamos en USD y la gestión está en ARS, y tenemos activada la conversión con TC Contador
+    else if (moneda === 'USD' && g.moneda === 'ARS' && convertirTcContador && tcContador > 0) {
+      if (!mapaGest[g.cuenta_codigo]) {
+        const conv = {
+          ...g,
+          _convertido: true,
+          _tcUsado: tcContador,
+        };
+        ['administracion','agricultura','granja_cerdos','serv_transporte','serv_agricolas','total'].forEach(k => {
+          conv[k] = (g[k] || 0) / tcContador;
+        });
+        mapaGest[g.cuenta_codigo] = conv;
+      }
+    }
+    // Si estamos en ARS y la gestión está en USD
+    else if (moneda === 'ARS' && g.moneda === 'USD' && convertirTcContador && tcContador > 0) {
+      if (!mapaGest[g.cuenta_codigo]) {
+        const conv = {
+          ...g,
+          _convertido: true,
+          _tcUsado: tcContador,
+        };
+        ['administracion','agricultura','granja_cerdos','serv_transporte','serv_agricolas','total'].forEach(k => {
+          conv[k] = (g[k] || 0) * tcContador;
+        });
+        mapaGest[g.cuenta_codigo] = conv;
+      }
+    }
+  });
 
   const codigos = Array.from(new Set([...Object.keys(mapaConta), ...Object.keys(mapaGest)])).sort();
 
@@ -239,6 +283,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
       ajuste: ajustes[cod] || null,
       enConta: !!c,
       enGestion: !!g,
+      convertido: g?._convertido,
     };
   });
 
@@ -283,7 +328,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
     if (!b.tipo) { setError('Elegí un tipo de ajuste.'); return; }
     setError('');
     const { error: err } = await supabase.from('ajustes_conciliacion').upsert({
-      campana: CAMPANA, moneda,
+      campana, moneda,
       cuenta_codigo: fila.cod,
       cuenta_desc: fila.desc,
       tipo: b.tipo,
@@ -300,7 +345,7 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
 
   const quitarAjuste = async (cod) => {
     await supabase.from('ajustes_conciliacion').delete()
-      .eq('campana', CAMPANA).eq('moneda', moneda).eq('cuenta_codigo', cod);
+      .eq('campana', campana).eq('moneda', moneda).eq('cuenta_codigo', cod);
     cargarTodo();
   };
 
@@ -406,54 +451,59 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
 
   return (
     <>
-      <div style={s.card}>
-        <div style={s.cardTitle}>Planilla de gestión del contador</div>
-        <div style={s.cardSub}>
-          Se lee la solapa TOTAL ANUAL. Elegí la moneda en la que está expresada la planilla
-          antes de subirla. La comparación es válida en pesos: en dólares el contador usa un
-          tipo de cambio único y la contabilidad usa el de cada operación.
-        </div>
-
-        <div style={s.cargaFila}>
-          <span style={s.label}>MONEDA</span>
-          <div style={s.grupo}>
-            <button style={monedaCarga === 'ARS' ? s.btnActive : s.btnOff}
-              onClick={() => setMonedaCarga('ARS')}>AR$</button>
-            <button style={monedaCarga === 'USD' ? s.btnActive : s.btnOff}
-              onClick={() => setMonedaCarga('USD')}>U$S</button>
+      <div className="responsive-grid-2">
+        <div style={s.card}>
+          <div style={s.cardTitle}>Planilla de gestión del contador</div>
+          <div style={s.cardSub}>
+            Se lee la solapa TOTAL ANUAL. Elegí la moneda en la que está expresada la planilla
+            antes de subirla. La comparación es válida en pesos: en dólares el contador usa un
+            tipo de cambio único y la contabilidad usa el de cada operación.
           </div>
-          <input type="file" accept=".xls,.xlsx" onChange={handleFile}
-            style={{ display: 'none' }} id="file-gestion" />
-          <label htmlFor="file-gestion" style={s.btn}>Subir planilla</label>
-        </div>
 
-        {msg && <div style={s.msgOk}>{msg}</div>}
-        {error && <div style={s.msgError}>{error}</div>}
-
-        {resumen.length > 0 && (
-          <div style={{ marginTop: '16px' }}>
-            <div style={s.subTitulo}>PLANILLAS CARGADAS</div>
-            {resumen.map(r => (
-              <div key={r.moneda + r.nombre} style={s.archivoItem}>
-                <span style={r.moneda === 'ARS' ? s.pillArs : s.pillUsd}>
-                  {r.moneda === 'ARS' ? 'AR$' : 'U$S'}
-                </span>
-                <span style={s.archivoNombre}>{r.nombre}</span>
-                <span style={s.archivoDato}>{r.cuentas} cuentas</span>
-                <span style={s.archivoDato}>
-                  {r.fecha ? new Date(r.fecha).toLocaleDateString('es-AR') : ''}
-                </span>
-                <button style={s.archivoEliminar}
-                  onClick={() => eliminarConsolidado(r.moneda, r.nombre)}
-                  title="Eliminar planilla, sus datos y sus ajustes">×</button>
-              </div>
-            ))}
-            <div style={s.notaChica}>
-              Subir de nuevo la misma moneda reemplaza la planilla anterior por completo.
-              Eliminar borra también los ajustes clasificados de esa moneda.
+          <div style={s.cargaFila}>
+            <span style={s.label}>MONEDA</span>
+            <div style={s.grupo}>
+              <button style={monedaCarga === 'ARS' ? s.btnActive : s.btnOff}
+                onClick={() => setMonedaCarga('ARS')}>AR$</button>
+              <button style={monedaCarga === 'USD' ? s.btnActive : s.btnOff}
+                onClick={() => setMonedaCarga('USD')}>U$S</button>
             </div>
+            <input type="file" accept=".xls,.xlsx" onChange={handleFile}
+              style={{ display: 'none' }} id="file-gestion" />
+            <label htmlFor="file-gestion" style={s.btn}>Subir planilla</label>
           </div>
-        )}
+
+          {msg && <div style={s.msgOk}>{msg}</div>}
+          {error && <div style={s.msgError}>{error}</div>}
+        </div>
+
+        <div style={s.card}>
+          <div style={s.cardTitle}>Planillas cargadas en campaña</div>
+          <div style={s.cardSub}>
+            Cada carga reemplaza la anterior para esa moneda. Al eliminar se borran también los ajustes clasificados.
+          </div>
+          {resumen.length === 0 ? (
+            <div style={s.vacio}>Todavía no se importaron planillas del contador.</div>
+          ) : (
+            <div>
+              {resumen.map(r => (
+                <div key={r.moneda + r.nombre} style={s.archivoItem}>
+                  <span style={r.moneda === 'ARS' ? s.pillArs : s.pillUsd}>
+                    {r.moneda === 'ARS' ? 'AR$' : 'U$S'}
+                  </span>
+                  <span style={s.archivoNombre}>{r.nombre}</span>
+                  <span style={s.archivoDato}>{r.cuentas} cuentas</span>
+                  <span style={s.archivoDato}>
+                    {r.fecha ? new Date(r.fecha).toLocaleDateString('es-AR') : ''}
+                  </span>
+                  <button style={s.archivoEliminar}
+                    onClick={() => eliminarConsolidado(r.moneda, r.nombre)}
+                    title="Eliminar planilla, sus datos y sus ajustes">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={s.selectorBar}>
@@ -487,9 +537,29 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
           </div>
         )}
         {moneda === 'USD' && (
-          <div style={s.avisoTC}>
-            Estás viendo dólares: las diferencias incluyen el efecto del tipo de cambio.
-            Para analizar ajustes, cambiá a AR$ en la pestaña Visualizar.
+          <div style={{ ...s.avisoTC, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', background: '#F4EFE5', padding: '8px 12px', borderRadius: '4px', borderLeft: '3px solid #B8873B', color: '#4A3D2C' }}>
+            <div>
+              <strong>Conversión con TC Contador:</strong> {convertirTcContador ? `Planilla TOTAL ANUAL (en AR$) convertida a U$S al tipo de cambio del Contador: ${fmt(tcContador)} AR$/USD.` : 'Visualizando datos en moneda nativa sin conversión.'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '11px', fontWeight: '600', color: '#6A5A43' }}>TC Contador:</label>
+              <input
+                type="number"
+                step="any"
+                value={tcContador}
+                onChange={e => setTcContador(parseFloat(e.target.value) || 0)}
+                style={{ width: '80px', padding: '3px 6px', fontSize: '11px', border: '1px solid #D8CDB6', borderRadius: '3px', textAlign: 'right' }}
+              />
+              <label style={s.check}>
+                <input
+                  type="checkbox"
+                  checked={convertirTcContador}
+                  onChange={e => setConvertirTcContador(e.target.checked)}
+                  style={{ marginRight: '4px' }}
+                />
+                Aplicar conversión
+              </label>
+            </div>
           </div>
         )}
       </div>
@@ -568,7 +638,8 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
           </div>
 
           <div style={s.tableCard}>
-            <div style={s.tableWrap}>
+            <div className="scroll-hint">← Deslizar para ver más columnas →</div>
+            <div className="touch-scroll" style={s.tableWrap}>
               <table style={s.table}>
                 <thead>
                   <tr>
@@ -619,36 +690,36 @@ export default function Conciliacion({ moneda = 'ARS', onMoneda }) {
 }
 
 const s = {
-  card: { background: COLOR.papel, border: `1px solid ${COLOR.borde}`, borderRadius: '3px', padding: '18px 22px', marginBottom: '14px' },
+  card: { background: COLOR.papel, border: `1px solid ${COLOR.borde}`, borderRadius: '3px', padding: '16px', marginBottom: '14px' },
   cardTitle: { fontSize: '15px', color: COLOR.oscuro, fontFamily: FUENTE.titulo, marginBottom: '6px' },
   cardSub: { fontSize: '11.5px', color: COLOR.textoSuave, lineHeight: '1.7', marginBottom: '14px' },
-  btn: { display: 'inline-block', padding: '8px 18px', background: COLOR.oscuro, color: COLOR.bronceClaro, borderRadius: '2px', fontSize: '11px', fontWeight: '500', cursor: 'pointer', border: 'none', fontFamily: FUENTE.ui, letterSpacing: '0.1em' },
-  btnSec: { padding: '8px 16px', background: 'transparent', color: COLOR.textoSuave, borderRadius: '2px', fontSize: '11px', cursor: 'pointer', border: `1px solid ${COLOR.borde}`, fontFamily: FUENTE.ui },
+  btn: { display: 'inline-block', padding: '10px 18px', minHeight: '44px', background: COLOR.oscuro, color: COLOR.bronceClaro, borderRadius: '2px', fontSize: '11px', fontWeight: '500', cursor: 'pointer', border: 'none', fontFamily: FUENTE.ui, letterSpacing: '0.1em', touchAction: 'manipulation' },
+  btnSec: { padding: '8px 16px', minHeight: '36px', background: 'transparent', color: COLOR.textoSuave, borderRadius: '2px', fontSize: '11px', cursor: 'pointer', border: `1px solid ${COLOR.borde}`, fontFamily: FUENTE.ui, touchAction: 'manipulation' },
   archivoInfo: { marginLeft: '12px', fontSize: '11px', color: COLOR.textoTenue },
   msgOk: { marginTop: '12px', padding: '9px 13px', background: COLOR.okFondo, color: COLOR.ok, borderRadius: '2px', fontSize: '12px' },
   msgError: { marginTop: '12px', padding: '9px 13px', background: COLOR.alertaFondo, color: COLOR.alerta, borderRadius: '2px', fontSize: '12px' },
   selectorBar: { background: COLOR.papel, border: `1px solid ${COLOR.borde}`, borderRadius: '3px', padding: '12px 16px', marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '8px' },
   fila: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
   label: { width: '58px', fontSize: '9px', fontWeight: '700', color: COLOR.textoSuave, letterSpacing: '0.12em', flexShrink: 0 },
-  grupo: { display: 'flex', gap: '4px' },
-  btnOff: { padding: '4px 12px', fontSize: '11px', fontWeight: '500', background: '#F0EDE4', color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
-  btnActive: { padding: '4px 12px', fontSize: '11px', fontWeight: '700', background: COLOR.oscuro, color: COLOR.bronceClaro, border: `1px solid ${COLOR.oscuro}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
-  avisoTC: { fontSize: '10.5px', color: COLOR.alerta, paddingLeft: '68px' },
+  grupo: { display: 'flex', gap: '4px', flexWrap: 'wrap' },
+  btnOff: { padding: '6px 12px', minHeight: '36px', fontSize: '11px', fontWeight: '500', background: '#F0EDE4', color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
+  btnActive: { padding: '6px 12px', minHeight: '36px', fontSize: '11px', fontWeight: '700', background: COLOR.oscuro, color: COLOR.bronceClaro, border: `1px solid ${COLOR.oscuro}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
+  avisoTC: { fontSize: '10.5px', color: COLOR.alerta, paddingLeft: '0' },
   check: { fontSize: '11px', color: COLOR.textoSuave, cursor: 'pointer', display: 'flex', alignItems: 'center' },
-  puente: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '14px' },
-  puenteItem: { flex: '1 1 110px', background: COLOR.fila, border: `1px solid ${COLOR.linea}`, borderRadius: '2px', padding: '9px 11px', minWidth: '110px', cursor: 'pointer' },
+  puente: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '6px', marginBottom: '14px' },
+  puenteItem: { background: COLOR.fila, border: `1px solid ${COLOR.linea}`, borderRadius: '2px', padding: '9px 11px', cursor: 'pointer' },
   puenteFinal: { background: COLOR.oscuro, borderColor: COLOR.oscuro },
   puenteLabel: { fontSize: '8.5px', color: COLOR.textoTenue, letterSpacing: '0.1em', marginBottom: '4px' },
   puenteVal: { fontSize: '14px', fontWeight: '600', color: COLOR.texto, fontVariantNumeric: 'tabular-nums' },
-  resumenLinea: { display: 'flex', gap: '22px', flexWrap: 'wrap', fontSize: '11.5px', color: COLOR.textoSuave, marginBottom: '8px' },
+  resumenLinea: { display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11.5px', color: COLOR.textoSuave, marginBottom: '8px' },
   barra: { height: '5px', background: COLOR.linea, borderRadius: '2px', overflow: 'hidden' },
   barraOk: { height: '100%', background: '#7C8460' },
   tableCard: { background: COLOR.papel, border: `1px solid ${COLOR.borde}`, borderRadius: '3px', overflow: 'hidden' },
-  tableWrap: { overflowX: 'auto' },
+  tableWrap: { overflowX: 'auto', WebkitOverflowScrolling: 'touch' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: '11px' },
-  thL: { background: COLOR.oscuro, color: '#FFF', padding: '8px 11px', textAlign: 'left', fontSize: '9.5px', letterSpacing: '0.06em', whiteSpace: 'nowrap', fontWeight: '500' },
+  thL: { background: COLOR.oscuro, color: '#FFF', padding: '8px 11px', textAlign: 'left', fontSize: '9.5px', letterSpacing: '0.06em', whiteSpace: 'nowrap', fontWeight: '500', position: 'sticky', left: 0, zIndex: 3 },
   thR: { background: COLOR.oscuro, color: '#FFF', padding: '8px 11px', textAlign: 'right', fontSize: '9.5px', letterSpacing: '0.06em', whiteSpace: 'nowrap', fontWeight: '500' },
-  tdL: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, color: COLOR.texto, whiteSpace: 'nowrap' },
+  tdL: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, color: COLOR.texto, whiteSpace: 'nowrap', position: 'sticky', left: 0, zIndex: 2, background: '#FFFFFF' },
   tdR: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, textAlign: 'right', color: COLOR.texto, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
   tdNota: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, fontSize: '10.5px', color: COLOR.textoSuave, maxWidth: '220px' },
   tdAcc: { padding: '5px 11px', borderBottom: `1px solid ${COLOR.linea}`, textAlign: 'right' },
@@ -658,17 +729,17 @@ const s = {
   pillAlerta: { fontSize: '10px', padding: '2px 8px', background: COLOR.alertaFondo, color: COLOR.alerta, borderRadius: '999px', whiteSpace: 'nowrap' },
   pillPendiente: { fontSize: '10px', padding: '2px 8px', background: '#F4EFE3', color: COLOR.textoTenue, borderRadius: '999px', whiteSpace: 'nowrap' },
   destino: { color: COLOR.bronce, fontWeight: '500' },
-  btnMini: { padding: '2px 9px', fontSize: '10px', background: 'transparent', color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
+  btnMini: { padding: '4px 9px', minHeight: '32px', fontSize: '10px', background: 'transparent', color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
   editorCelda: { padding: 0, background: COLOR.fila, borderBottom: `1px solid ${COLOR.linea}` },
-  editor: { padding: '14px 18px' },
+  editor: { padding: '14px 16px' },
   editorHead: { fontSize: '12px', color: COLOR.texto, marginBottom: '10px', fontWeight: '500' },
   tiposGrid: { display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '10px' },
-  tipoBtn: { padding: '6px 13px', fontSize: '11px', background: COLOR.papel, color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
-  tipoActive: { padding: '6px 13px', fontSize: '11px', fontWeight: '600', background: COLOR.oscuro, color: COLOR.bronceClaro, border: `1px solid ${COLOR.oscuro}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
-  input: { width: '100%', padding: '7px 11px', fontSize: '11.5px', border: `1px solid ${COLOR.borde}`, borderRadius: '2px', fontFamily: FUENTE.ui, background: COLOR.papel, color: COLOR.texto, marginBottom: '7px', outline: 'none', boxSizing: 'border-box' },
-  editorAcc: { display: 'flex', gap: '7px', marginTop: '4px' },
+  tipoBtn: { padding: '8px 13px', minHeight: '36px', fontSize: '11px', background: COLOR.papel, color: COLOR.textoSuave, border: `1px solid ${COLOR.borde}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
+  tipoActive: { padding: '8px 13px', minHeight: '36px', fontSize: '11px', fontWeight: '600', background: COLOR.oscuro, color: COLOR.bronceClaro, border: `1px solid ${COLOR.oscuro}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
+  input: { width: '100%', padding: '10px 11px', fontSize: '16px', border: `1px solid ${COLOR.borde}`, borderRadius: '2px', fontFamily: FUENTE.ui, background: COLOR.papel, color: COLOR.texto, marginBottom: '7px', outline: 'none', boxSizing: 'border-box', touchAction: 'manipulation' },
+  editorAcc: { display: 'flex', gap: '7px', marginTop: '4px', flexWrap: 'wrap' },
   totalRow: { background: COLOR.medio },
-  tdTotal: { padding: '8px 11px', color: '#FFF', fontWeight: '600', fontSize: '11px' },
+  tdTotal: { padding: '8px 11px', color: '#FFF', fontWeight: '600', fontSize: '11px', position: 'sticky', left: 0, zIndex: 2, background: COLOR.medio },
   tdTotalNum: { padding: '8px 11px', textAlign: 'right', color: COLOR.bronceClaro, fontWeight: '600', fontVariantNumeric: 'tabular-nums' },
   loading: { textAlign: 'center', padding: '44px', color: COLOR.textoTenue, fontSize: '12px' },
   empty: { textAlign: 'center', padding: '44px', color: COLOR.textoTenue, fontSize: '12px', background: COLOR.papel, border: `1px solid ${COLOR.borde}`, borderRadius: '3px' },
@@ -677,16 +748,16 @@ const s = {
   archivoItem: { display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 11px', background: COLOR.fila, border: `1px solid ${COLOR.linea}`, borderRadius: '2px', marginBottom: '5px', fontSize: '12px' },
   archivoNombre: { flex: 1, color: COLOR.texto, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   archivoDato: { fontSize: '10.5px', color: COLOR.textoTenue, flexShrink: 0 },
-  archivoEliminar: { background: 'none', border: 'none', color: COLOR.textoTenue, fontSize: '17px', cursor: 'pointer', padding: '0 2px', lineHeight: 1, flexShrink: 0 },
+  archivoEliminar: { background: 'none', border: 'none', color: COLOR.textoTenue, fontSize: '17px', cursor: 'pointer', padding: '0 4px', lineHeight: 1, flexShrink: 0, minHeight: '36px', touchAction: 'manipulation' },
   pillArs: { fontSize: '10px', fontWeight: '700', padding: '2px 9px', background: COLOR.okFondo, color: COLOR.ok, borderRadius: '999px', flexShrink: 0 },
   pillUsd: { fontSize: '10px', fontWeight: '700', padding: '2px 9px', background: '#FBEBCB', color: '#7E5A12', borderRadius: '999px', flexShrink: 0 },
   notaChica: { fontSize: '10.5px', color: COLOR.textoTenue, marginTop: '8px', lineHeight: '1.6' },
   puenteActivo: { background: COLOR.oscuro, borderColor: COLOR.oscuro },
   puenteCuenta: { fontSize: '9.5px', color: COLOR.textoTenue, marginTop: '3px' },
-  filtroActivo: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', fontSize: '11px', color: COLOR.textoSuave },
-  btnQuitar: { padding: '2px 9px', fontSize: '10px', background: 'transparent', color: COLOR.alerta, border: `1px solid ${COLOR.alerta}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui },
-  seccion: { background: '#4A3520', color: '#E6C070', padding: '5px 11px', fontWeight: '600', fontSize: '9.5px', letterSpacing: '0.1em' },
+  filtroActivo: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', fontSize: '11px', color: COLOR.textoSuave, flexWrap: 'wrap' },
+  btnQuitar: { padding: '4px 9px', minHeight: '32px', fontSize: '10px', background: 'transparent', color: COLOR.alerta, border: `1px solid ${COLOR.alerta}`, borderRadius: '2px', cursor: 'pointer', fontFamily: FUENTE.ui, touchAction: 'manipulation' },
+  seccion: { background: '#4A3520', color: '#E6C070', padding: '5px 11px', fontWeight: '600', fontSize: '9.5px', letterSpacing: '0.1em', position: 'sticky', left: 0, zIndex: 2 },
   subtotalRow: { background: '#EFE8DA' },
-  tdSubtotal: { padding: '6px 11px', color: COLOR.texto, fontWeight: '600', fontSize: '11px', borderTop: `1px solid ${COLOR.borde}` },
+  tdSubtotal: { padding: '6px 11px', color: COLOR.texto, fontWeight: '600', fontSize: '11px', borderTop: `1px solid ${COLOR.borde}`, position: 'sticky', left: 0, zIndex: 2, background: '#EFE8DA' },
   tdSubtotalNum: { padding: '6px 11px', textAlign: 'right', color: COLOR.texto, fontWeight: '600', fontVariantNumeric: 'tabular-nums', borderTop: `1px solid ${COLOR.borde}`, whiteSpace: 'nowrap' },
 };

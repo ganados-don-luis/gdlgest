@@ -35,6 +35,15 @@ function Login() {
   const [focoPass, setFocoPass] = useState(false);
   const navigate = useNavigate();
 
+  React.useEffect(() => {
+    // Al entrar a login, aseguramos limpieza de cualquier sesión residual persistida
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
+        localStorage.removeItem(key);
+      }
+    });
+  }, []);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
@@ -146,23 +155,25 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '24px',
+    padding: '16px',
+    boxSizing: 'border-box',
   },
-  wrap: { width: '100%', maxWidth: '350px' },
+  wrap: { width: '100%', maxWidth: '360px' },
   azulejos: {
     display: 'grid',
     gridTemplateColumns: 'repeat(4, 1fr)',
     gap: '2px',
-    marginBottom: '24px',
+    marginBottom: '20px',
   },
   card: {
     background: COLOR.papel,
     border: `1px solid ${COLOR.borde}`,
-    borderRadius: '3px',
-    padding: '30px 28px',
+    borderRadius: '4px',
+    padding: '28px 22px',
+    boxShadow: '0 4px 16px rgba(36,29,23,0.06)',
   },
   title: {
-    fontSize: '27px',
+    fontSize: '26px',
     fontWeight: '500',
     color: COLOR.oscuro,
     fontFamily: FUENTE.titulo,
@@ -178,12 +189,12 @@ const styles = {
     fontFamily: FUENTE.ui,
     textAlign: 'center',
     letterSpacing: '0.22em',
-    margin: '0 0 26px',
+    margin: '0 0 24px',
   },
   label: {
     display: 'block',
     fontSize: '9.5px',
-    fontWeight: '500',
+    fontWeight: '600',
     color: COLOR.textoSuave,
     fontFamily: FUENTE.ui,
     letterSpacing: '0.16em',
@@ -193,54 +204,60 @@ const styles = {
     flex: 1,
     border: 'none',
     background: 'transparent',
-    fontSize: '13px',
+    fontSize: '14px',
     fontFamily: FUENTE.ui,
     color: COLOR.texto,
     outline: 'none',
-    padding: 0,
+    padding: '4px 0',
+    minHeight: '28px',
   },
   verBtn: {
     border: 'none',
     background: 'transparent',
-    fontSize: '10px',
+    fontSize: '11px',
     fontFamily: FUENTE.ui,
     color: COLOR.textoTenue,
-    letterSpacing: '0.1em',
+    letterSpacing: '0.08em',
     cursor: 'pointer',
-    padding: 0,
+    padding: '6px 4px',
+    touchAction: 'manipulation',
   },
   error: {
     borderLeft: `2px solid ${COLOR.terracota}`,
     background: COLOR.errorFondo,
-    padding: '8px 11px',
+    padding: '10px 12px',
     marginBottom: '20px',
-    fontSize: '11.5px',
+    fontSize: '12px',
     fontFamily: FUENTE.ui,
     color: COLOR.errorTexto,
+    lineHeight: '1.4',
   },
   button: {
     width: '100%',
-    padding: '12px',
+    padding: '14px',
     border: 'none',
-    borderRadius: '2px',
+    borderRadius: '3px',
     background: COLOR.oscuro,
     color: COLOR.bronceClaro,
-    fontSize: '11px',
-    fontWeight: '500',
+    fontSize: '11.5px',
+    fontWeight: '600',
     fontFamily: FUENTE.ui,
     letterSpacing: '0.18em',
     cursor: 'pointer',
+    touchAction: 'manipulation',
+    minHeight: '44px',
   },
   ayuda: {
-    fontSize: '10.5px',
+    fontSize: '11px',
     fontWeight: '300',
     color: COLOR.textoTenue,
     fontFamily: FUENTE.ui,
     textAlign: 'center',
     margin: '18px 0 0',
+    lineHeight: '1.4',
   },
   pie: {
-    fontSize: '9px',
+    fontSize: '9.5px',
     color: COLOR.textoTenue,
     fontFamily: FUENTE.ui,
     textAlign: 'center',
